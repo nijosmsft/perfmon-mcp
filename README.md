@@ -66,7 +66,7 @@ Add the server to your MCP client config (Claude Desktop, Copilot CLI, etc):
 
 ## Tool catalog
 
-The server exposes 34 tools across six areas:
+The server exposes 33 tools across six areas:
 
 ### Discovery
 

@@ -182,14 +182,21 @@ PROFILES: dict[str, ProfileMeta] = {
         notes=(
             "The .cset file uses wildcard counter paths; the capture-time "
             "logman command does the per-instance enumeration via the "
-            "Adapter #2 filter on the source system."
+            "instance filter configured for this profile (defaults to "
+            "``<adapter>`` = ``Adapter #2`` on the project's standard test "
+            "hardware). The default is configurable via "
+            "``default_instance_filter`` on the ProfileMeta; override "
+            "per-call by passing ``instance_filter=`` to "
+            "``get_capture_commands`` / ``get_capture_instructions``."
         ),
         cset_filename="mellanox-percpu.cset",
         priority_metrics=[
             "Rss IPv4 Only",
             "Rss IPv4/Udp",
             "Rss IPv4/Tcp",
+            "Rss IPv6 Only",
             "Rss IPv6/Udp",
+            "Rss IPv6/Tcp",
             "Encapsulated Rss IPv4/Udp",
             "NonRss IPv4",
             "DpcWatchDog Starvation",

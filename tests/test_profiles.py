@@ -84,15 +84,36 @@ def test_mellanox_percpu_default_instance_filter_is_adapter_2():
 
 
 def test_mellanox_percpu_priority_metrics_carries_curated_set():
-    """The curated 8 hash-type counter names from the analyze-mellanox-rss
+    """The curated hash-type counter names from the analyze-mellanox-rss
     skill must be on the profile so the network-lenses RSS distribution
-    tool can fall back to them when no scenario_hint is given."""
+    tool can fall back to them when no scenario_hint is given.
+
+    The list MUST be IPv4/IPv6-symmetric: Rss IPv4 Only / Udp / Tcp on
+    one side AND Rss IPv6 Only / Udp / Tcp on the other. The v0.3 PR
+    review caught this asymmetry (4 IPv4 entries vs 1 IPv6).
+    """
     meta = PROFILES["mellanox-percpu"]
     assert len(meta.priority_metrics) >= 8
     joined = " ".join(meta.priority_metrics).lower()
     # At minimum the 4 IPv4 hash-type names + 4 IPv6 names should be present.
     assert "rss ipv4" in joined
     assert "rss ipv6" in joined
+
+    # IPv4 <-> IPv6 symmetry for the three base RSS hash-type classes.
+    # Exact-membership (not substring) to catch regressions where
+    # someone re-introduces the asymmetry.
+    for name in (
+        "Rss IPv4 Only",
+        "Rss IPv4/Udp",
+        "Rss IPv4/Tcp",
+        "Rss IPv6 Only",
+        "Rss IPv6/Udp",
+        "Rss IPv6/Tcp",
+    ):
+        assert name in meta.priority_metrics, (
+            f"mellanox-percpu.priority_metrics is missing {name!r} - "
+            "the IPv4/IPv6 symmetry was broken by a regression."
+        )
 
 
 def test_mellanox_rss_has_ndis_poll_metric():

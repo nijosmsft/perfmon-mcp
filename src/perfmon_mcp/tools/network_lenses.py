@@ -14,7 +14,7 @@ Tools:
   substring matches against the instance string (e.g. the NIC
   description shown by ``discover_nics``).
 - :func:`get_rss_distribution` — narrow a per-queue aggregate to the
-  13 Mellanox WinOF-2 RSS counter names from the
+  14 Mellanox WinOF-2 RSS counter names from the
   ``analyze-mellanox-rss`` skill, with Hot/Idle peer-group flags
   surfaced. Use after loading a ``mellanox-percpu`` or ``mellanox-rss``
   capture.
@@ -52,10 +52,14 @@ _THROUGHPUT_OBJECT_HINTS: tuple[str, ...] = (
 )
 
 
-# The 13 Mellanox WinOF-2 RSS counter names from the analyze-mellanox-rss
-# skill. Kept here (not in profiles/metadata.py) because the lens is the
-# only consumer; the profile's ``priority_metrics`` list is the
-# authoritative subset and is used preferentially when present.
+# 14 curated Mellanox WinOF-2 RSS counter names from the
+# analyze-mellanox-rss skill: 1 NDIS-poll metric + 6 Rss
+# hash-type classes (IPv4/IPv6 x Only/Udp/Tcp) + 3 Encapsulated Rss
+# + 2 NonRss + 2 datapath-health (Interrupts on incorrect cpu,
+# DpcWatchDog Starvation). Kept here (not in profiles/metadata.py)
+# because the lens is the only consumer; the profile's
+# ``priority_metrics`` list is the authoritative subset and is used
+# preferentially when present.
 _MELLANOX_RSS_COUNTER_NAMES: tuple[str, ...] = (
     "Packets processed in NDIS poll mode",
     "Rss IPv4 Only",
