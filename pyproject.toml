@@ -1,0 +1,75 @@
+[project]
+name = "perfmon-mcp"
+version = "0.1.0"
+description = "MCP server for Windows performance counter (PDH) capture, analysis, and live snapshot"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+authors = [
+    {name = "Nithin Jose", email = "nijos@microsoft.com"},
+]
+keywords = ["mcp", "pdh", "perfmon", "windows", "performance", "counters", "blg"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Monitoring",
+]
+dependencies = [
+    "mcp>=1.0",
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+]
+
+# Evidence-store federation is OFF by default and not installed as a default
+# dep. The integration in src/perfmon_mcp/evidence_integration.py is guarded
+# by ``try/except ImportError`` AND the ``PERFMON_MCP_EVIDENCE_PATH`` env
+# var, so an unchanged-env install behaves identically to a default install.
+#
+# To enable evidence federation:
+#
+#   1. Install evidence-store from its repo (it is not on PyPI):
+#
+#         uv pip install git+https://github.com/nijosmsft/evidence-store
+#
+#   2. Set the env var:
+#
+#         $env:PERFMON_MCP_EVIDENCE_PATH = "C:\evidence"
+
+[project.urls]
+Homepage = "https://github.com/nijosmsft/perfmon-mcp"
+Repository = "https://github.com/nijosmsft/perfmon-mcp"
+Issues = "https://github.com/nijosmsft/perfmon-mcp/issues"
+
+[project.scripts]
+perfmon-mcp = "perfmon_mcp.server:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/perfmon_mcp"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/perfmon_mcp/profiles/system-overview.cset" = "perfmon_mcp/profiles/system-overview.cset"
+"src/perfmon_mcp/profiles/cpu-detailed.cset" = "perfmon_mcp/profiles/cpu-detailed.cset"
+"src/perfmon_mcp/profiles/mellanox-rss.cset" = "perfmon_mcp/profiles/mellanox-rss.cset"
+"src/perfmon_mcp/profiles/mellanox-percpu.cset" = "perfmon_mcp/profiles/mellanox-percpu.cset"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: tests that load large .blg files",
+]
