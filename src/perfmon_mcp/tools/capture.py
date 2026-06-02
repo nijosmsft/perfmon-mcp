@@ -24,9 +24,11 @@ Tool list:
 Both branch on ``meta.scenario == 'mellanox-percpu'`` to switch the
 counter-list generation between (a) the .cset's wildcard counter paths
 written verbatim to the logman -cf file, and (b) the explicit per-
-instance enumeration filtered to 'Adapter #2' via Get-Counter
--ListSet. The latter is the heavy diagnostic mode whose ~28pp delivery
-cost is surfaced in the profile metadata.
+instance enumeration filtered via the caller-supplied
+``instance_filter`` (default = ``meta.default_instance_filter``, e.g.
+``'Adapter #2'`` on the per-CPU Mellanox profile). The latter is the
+heavy diagnostic mode whose ~28pp delivery cost is surfaced in the
+profile metadata.
 """
 
 from __future__ import annotations
@@ -162,22 +164,47 @@ def _metadata_table(meta: ProfileMeta) -> str:
     return format_table(df, max_rows=len(rows) + 1)
 
 
-def _build_counter_file_step(meta: ProfileMeta, counter_file: str) -> str:
+def _build_counter_file_step(
+    meta: ProfileMeta,
+    counter_file: str,
+    instance_filter: str = "",
+) -> str:
     """Render the PowerShell that materializes the -cf counter list file.
 
-    For ``mellanox-percpu`` this enumerates Adapter #2 paths at runtime
-    via Get-Counter -ListSet (the heavy diagnostic mode). For every
-    other scenario it writes the wildcard counter paths from the
-    bundled .cset verbatim.
+    For ``mellanox-percpu`` (and any other scenario carrying a non-empty
+    ``default_instance_filter``) this enumerates per-instance paths at
+    runtime via Get-Counter -ListSet, filtered with PowerShell
+    ``-match``. For every other scenario it writes the wildcard counter
+    paths from the bundled .cset verbatim.
+
+    The filter precedence is:
+      1. ``instance_filter`` argument (caller's choice, wins).
+      2. ``meta.default_instance_filter`` (profile default).
+      3. ``""`` — enumerate every instance (almost always too many).
     """
     if meta.scenario == "mellanox-percpu":
+        effective_filter = instance_filter or meta.default_instance_filter
+        safe_filter = effective_filter.replace("'", "''") if effective_filter else ""
+        filter_clause = (
+            f" | Where-Object {{ $_ -match '{safe_filter}' }}"
+            if safe_filter
+            else ""
+        )
+        filter_comment = (
+            f"# Per-instance filter: '{effective_filter}'.\n"
+            if effective_filter
+            else "# WARNING: no per-instance filter — every instance on every NIC will be captured.\n"
+        )
         return (
-            "# Enumerate explicit per-instance Mellanox counter paths\n"
-            "# (Adapter #2 = TEST-100G-2 data NIC). This is the HEAVY\n"
-            "# variant - expect ~28pp delivery cost at 400K offered load.\n"
-            "$rssPaths = (Get-Counter -ListSet 'Mellanox WinOF-2 Rss Counters').PathsWithInstances | Where-Object { $_ -match 'Adapter #2' }\n"
-            "$rxPaths  = (Get-Counter -ListSet 'Mellanox WinOF-2 Receive Datapath Counters').PathsWithInstances | Where-Object { $_ -match 'Adapter #2' }\n"
-            "$txPaths  = (Get-Counter -ListSet 'Mellanox WinOF-2 Transmit Datapath Counters').PathsWithInstances | Where-Object { $_ -match 'Adapter #2' }\n"
+            "# Enumerate explicit per-instance Mellanox counter paths.\n"
+            f"{filter_comment}"
+            "# This is the HEAVY variant - expect ~28pp delivery cost at 400K offered load.\n"
+            "$rssPaths = (Get-Counter -ListSet 'Mellanox WinOF-2 Rss Counters').PathsWithInstances"
+            f"{filter_clause}\n"
+            "$rxPaths  = (Get-Counter -ListSet 'Mellanox WinOF-2 Receive Datapath Counters').PathsWithInstances"
+            f"{filter_clause}\n"
+            "$txPaths  = (Get-Counter -ListSet 'Mellanox WinOF-2 Transmit Datapath Counters').PathsWithInstances"
+            f"{filter_clause}\n"
             f"($rssPaths + $rxPaths + $txPaths) | Set-Content '{counter_file}' -Encoding ASCII\n"
         )
     counters = extract_counter_paths(load_cset_text(meta.scenario))
@@ -192,12 +219,15 @@ def _build_counter_file_step(meta: ProfileMeta, counter_file: str) -> str:
 
 
 def _build_logman_commands(
-    meta: ProfileMeta, blg_path: str, duration_s: int
+    meta: ProfileMeta,
+    blg_path: str,
+    duration_s: int,
+    instance_filter: str = "",
 ) -> str:
     """Render the full logman command block for a perfmon scenario."""
     counter_file = _counter_file_path_for(blg_path)
     csv_path = _csv_path_for(blg_path)
-    counter_step = _build_counter_file_step(meta, counter_file)
+    counter_step = _build_counter_file_step(meta, counter_file, instance_filter)
 
     return (
         "```powershell\n"
@@ -242,6 +272,7 @@ def get_capture_commands(
     scenario: str,
     output_path: str,
     duration_s: int = 30,
+    instance_filter: str = "",
 ) -> str:
     """Return paste-ready logman commands to capture a perfmon .blg.
 
@@ -252,15 +283,24 @@ def get_capture_commands(
             written next to it. Must be non-empty.
         duration_s: Capture window in seconds. Between 1 and 3600.
             Default 30.
+        instance_filter: Per-instance regex used by the per-instance
+            enumeration step of the ``mellanox-percpu`` scenario.
+            Empty defaults to the profile's
+            ``default_instance_filter`` (``'Adapter #2'`` for
+            ``mellanox-percpu``). Pass an explicit value to scope to a
+            different NIC; pass ``"*"`` or any always-matching regex
+            to enumerate every instance (rarely what you want).
+            Ignored for scenarios whose counter file comes from the
+            bundled .cset.
 
     Returns:
         A markdown document with one ```powershell``` fenced block
         containing the 6-step logman command set (clean / counter-file /
         create / start+sleep+stop / relog / teardown / verify). For the
         ``mellanox-percpu`` scenario the counter-file step enumerates
-        per-instance Adapter #2 paths via Get-Counter -ListSet; for
-        every other scenario it writes the wildcard counter paths from
-        the bundled .cset verbatim.
+        per-instance paths via Get-Counter -ListSet, filtered by
+        ``instance_filter``; for every other scenario it writes the
+        wildcard counter paths from the bundled .cset verbatim.
 
     This tool never executes anything. Run the commands locally, on a
     remote MCP node, on an SSH host, or by handing them to a human.
@@ -270,7 +310,7 @@ def get_capture_commands(
         return result
     meta = result
 
-    commands = _build_logman_commands(meta, output_path, duration_s)
+    commands = _build_logman_commands(meta, output_path, duration_s, instance_filter)
     csv_path = _csv_path_for(output_path)
 
     warning = ""
@@ -294,6 +334,7 @@ def get_capture_instructions(
     scenario: str,
     target: str = "local",
     output_path: str = "C:\\perfmon\\capture.blg",
+    instance_filter: str = "",
 ) -> str:
     """Return a full step-by-step capture runbook for a perfmon scenario.
 
@@ -304,6 +345,11 @@ def get_capture_instructions(
             transfer-back transport examples. Default ``"local"``.
         output_path: Where the .blg should be written on the target.
             Default ``"C:\\perfmon\\capture.blg"``.
+        instance_filter: Per-instance regex used by the per-instance
+            enumeration step of the ``mellanox-percpu`` scenario.
+            Empty defaults to the profile's
+            ``default_instance_filter``. See
+            ``get_capture_commands`` for the full description.
 
     Returns:
         A long-form markdown runbook covering prerequisites, profile
@@ -361,12 +407,24 @@ def get_capture_instructions(
             "driver does NOT register the Mellanox-vendor counter "
             "sets; you need the NVIDIA WinOF-2 MSI."
         )
-        sections.append(
-            "- The data NIC under test should be identifiable as "
-            "`Adapter #2` (the runbook filters on that string to "
-            "avoid polluting collection with another Mellanox NIC's "
-            "instances)."
-        )
+        effective_filter = instance_filter or meta.default_instance_filter
+        if effective_filter:
+            sections.append(
+                "- The capture filters per-instance counter paths via "
+                f"`-match '{effective_filter}'` (PowerShell regex). "
+                "Confirm the data NIC under test is matched by that "
+                "filter before running; use "
+                "`discover_counter_instances(set_name=<...>, "
+                f"instance_filter='{effective_filter}')` to preview the "
+                "exact path list."
+            )
+        else:
+            sections.append(
+                "- No per-instance filter is set. The capture will "
+                "enumerate **every** instance for every Mellanox "
+                "counter set on the host. Pass `instance_filter` "
+                "(e.g. `'Adapter #2'`) to scope to a single NIC."
+            )
     if meta.notes:
         sections.append(f"- Notes: {meta.notes}")
     sections.append("")
@@ -387,10 +445,17 @@ def get_capture_instructions(
     sections.append(
         "Run the 6-step block below. Equivalent to calling "
         f"`get_capture_commands('{scenario}', '{output_path}', "
-        f"{meta.recommended_duration_s})`:"
+        f"{meta.recommended_duration_s}, instance_filter='{instance_filter}')`:"
     )
     sections.append("")
-    sections.append(_build_logman_commands(meta, output_path, meta.recommended_duration_s))
+    sections.append(
+        _build_logman_commands(
+            meta,
+            output_path,
+            meta.recommended_duration_s,
+            instance_filter,
+        )
+    )
     next_section += 1
 
     # N. Stop and verify
