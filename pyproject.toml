@@ -1,6 +1,6 @@
 [project]
 name = "perfmon-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server for Windows performance counter (PDH) capture, analysis, and live snapshot"
 readme = "README.md"
 license = {text = "MIT"}

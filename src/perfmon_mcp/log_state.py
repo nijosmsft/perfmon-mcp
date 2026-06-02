@@ -75,7 +75,8 @@ def require_log(log_id: str) -> LogData:
     """Get a loaded log by ID or raise a helpful ValueError."""
     if not log_id:
         raise ValueError(
-            "log_id is required. Call load_blg first and pass the returned log_id."
+            "log_id is required. Call load_log first (or load_blg, deprecated) "
+            "and pass the returned log_id."
         )
 
     log = get_log(log_id)
@@ -87,7 +88,8 @@ def require_log(log_id: str) -> LogData:
                 f"Unknown log_id `{log_id}`. Loaded log IDs: {loaded_msg}"
             )
         raise ValueError(
-            f"Unknown log_id `{log_id}`. No logs are loaded. Call load_blg first."
+            f"Unknown log_id `{log_id}`. No logs are loaded. "
+            "Call load_log first (or load_blg, deprecated)."
         )
     return log
 

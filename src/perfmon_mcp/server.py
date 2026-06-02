@@ -12,6 +12,7 @@ import perfmon_mcp.tools.profiles  # noqa: F401, E402
 import perfmon_mcp.tools.snapshot  # noqa: F401, E402
 import perfmon_mcp.tools.capture  # noqa: F401, E402
 import perfmon_mcp.tools.analyze  # noqa: F401, E402
+import perfmon_mcp.tools.network_lenses  # noqa: F401, E402
 import perfmon_mcp.tools.evidence  # noqa: F401, E402  - optional evidence-store federation
 
 

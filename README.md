@@ -16,7 +16,12 @@ returns the same markdown shape as the local path.
 
 ## Status
 
-v0.1.0. Initial scaffold.
+v0.2.0. Adds the `analyze` mega-tool, registry tools
+(`load_log`/`load_csv`/`unload_log`/`log_info`/`list_blgs`),
+counter-set / NIC / capture-status discovery tools, a NIC throughput
+convenience lens, and LabLink-first remote runbooks (with JSON sidecars)
+across every emit-style tool. `load_blg` is preserved as a deprecation
+alias of `load_log`.
 
 ## Setup
 
@@ -53,7 +58,7 @@ Add the server to your MCP client config (Claude Desktop, Copilot CLI, etc):
 
 ## Tool catalog
 
-The server exposes 14 tools across four areas:
+The server exposes 27 tools across six areas:
 
 ### Discovery
 
@@ -61,31 +66,44 @@ The server exposes 14 tools across four areas:
 |---|---|
 | `list_counter_profiles()` | Table of bundled profiles with when-to-use + overhead. |
 | `get_counter_profile(scenario)` | Metadata + counter list + analysis-tool affinity for one profile. |
+| `discover_counter_sets(target, vendor_filter)` | List installed PDH counter sets via `Get-Counter -ListSet *`, vendor-tagged (Mellanox / Intel / Broadcom / Microsoft / Other). |
+| `parse_counter_sets_output(text, vendor_filter)` | Re-render the same table from raw remote stdout. |
+| `discover_nics(target)` | Enumerate NICs via `Get-NetAdapter` (Name, IfIndex, Status, LinkSpeed, MAC, Description). |
+| `parse_nics_output(text)` | Re-render the table from raw remote stdout. |
 
 ### Live snapshot (PowerShell `Get-Counter`)
 
 | Tool | Purpose |
 |---|---|
-| `snapshot_counters(scenario, target="local")` | Local: runs `Get-Counter`, returns markdown. Remote: returns the command for the LLM to dispatch. |
+| `snapshot_counters(scenario, target="local")` | Local: runs `Get-Counter`, returns markdown. Remote: returns LabLink-first runbook + JSON sidecar. |
 | `parse_counter_output(text, scenario)` | Parses raw `Get-Counter` text (from remote execution) into the same markdown shape. |
 
 ### Capture (logman to .blg, then relog to CSV)
 
 | Tool | Purpose |
 |---|---|
-| `get_capture_commands(scenario, output_path, duration_s)` | Paste-ready 3-step logman commands (create/start/stop + relog). |
-| `get_capture_instructions(scenario, target, output_path)` | Full runbook including remote transfer-back examples. |
+| `get_capture_commands(scenario, output_path, duration_s)` | Paste-ready 6-step logman commands (create / start / stop / relog / teardown / verify). |
+| `get_capture_instructions(scenario, target, output_path)` | Full runbook including remote transfer-back examples (LabLink preferred, PSRemoting / scp fallbacks). |
+| `get_capture_status(target)` | Emit-only `logman query` for the managed collector + LabLink-first JSON sidecar. |
+| `parse_capture_status_output(text)` | Render the markdown status table from raw `logman query` stdout. |
 
-### Analyze (load a captured .blg)
+### Analyze (load a captured .blg or .csv)
 
 | Tool | Purpose |
 |---|---|
-| `load_blg(path)` | Convert .blg -> CSV via `relog.exe`, register a `log_id`. |
+| `load_log(path)` | Canonical loader. Auto-detects `.blg` (relog -> CSV) vs `.csv`, hits the side-by-side parquet cache when fresh, otherwise builds it. |
+| `load_csv(path)` | Skip relog for plain `.csv` inputs. |
+| `load_blg(path)` | **Deprecated v0.2 alias** of `load_log` (still works, emits a `DeprecationWarning`). |
 | `list_loaded_logs()` | Active log registry. |
+| `log_info(log_id)` | One-log metadata summary (hosts / counter count / duration / cache dir). |
+| `unload_log(log_id)` | Drop a log from the registry (cache stays on disk). |
+| `list_blgs(directory, pattern)` | Enumerate `.blg` files in a directory (size + mtime). `directory` is required — common locations: `$env:USERPROFILE`, `C:\perfmon`, the dir holding `.blg` files you just downloaded via lablink. |
+| `analyze(log_id, sections)` | Mega-tool that composes summary + timeline + per-queue overview into one call. |
 | `get_counter_summary(log_id, top_n)` | Per-counter mean/min/max/p95. |
 | `get_counter_timeline(log_id, counter, bucket_seconds, max_rows)` | Time-bucketed values for one counter. |
 | `get_per_queue_summary(log_id, queue_filter)` | Per-NIC-RSS-queue aggregation, generic by counter-set. |
-| `compare_logs(baseline_log_id, test_log_id, top_n)` | A/B delta table sorted by largest swing. |
+| `get_counter_throughput(log_id, nic_filter, top_n)` | NIC convenience lens; narrows the summary to Network Adapter throughput rows. |
+| `compare_logs(baseline_log_id, test_log_id, top_n, mode)` | A/B delta table sorted by largest swing. `mode='counter'\|'per_queue'\|'per_cpu'`. |
 
 ### Evidence federation (optional)
 
@@ -109,19 +127,34 @@ skill into a single discoverable counter-set surface.
 ## Remote workflows
 
 Any tool that touches the system takes `target="local"` (executes) or
-`target="remote"` (emits commands). The remote runbook from
-`get_capture_instructions` always documents three transfer-back options so
-this MCP is not tied to any one orchestration layer:
+`target="remote"` (emits the LabLink-first runbook + a JSON sidecar).
+The sidecar contains transport-agnostic primitives only
+(`parse_with`, `shell`, `expected_runtime_s`, `timeout_s`), so any MCP
+file-transfer / shell-exec tool can dispatch it.
 
-- PowerShell remoting:
+The canonical remote idiom for every `target='remote'` tool is:
+
+1. Call the tool to get the runbook block.
+2. Dispatch the powershell fence via your preferred transport
+   (LabLink `lablink.execute_command` / `execute_script` is preferred;
+   PSRemoting and scp are fallbacks).
+3. Feed the raw stdout to the matching `parse_*_output` tool from the
+   sidecar's `parse_with` field; it renders the same markdown the local
+   path would have produced.
+
+The transfer-back runbook from `get_capture_instructions` lists three
+options in the same preference order:
+
+- **LabLink (or equivalent MCP transport, preferred):**
+  `pull_file(node="<name>", remote_path="<remote_blg>", local_path="<local_path>")`
+- **PowerShell remoting (fallback):**
   `Copy-Item -FromSession (New-PSSession <host>) -Path <remote_blg> -Destination <local_path>`
-- LabLink (one example MCP transport — any MCP file-transfer tool works the
-  same way): `pull_file(node="<name>", remote_path="<remote_blg>", local_path="<local_path>")`
-- Manual: `scp <user>@<host>:<remote_blg> <local_path>` or a human copies
-  the file via RDP / share / USB.
+- **Manual (fallback):** `scp <user>@<host>:<remote_blg> <local_path>` or a
+  human copies the file via RDP / share / USB.
 
 The MCP itself imports no orchestration library and reads no orchestration
-environment variable.
+environment variable — that contract is enforced by
+`tests/test_remote_zero_coupling.py`.
 
 ## Architecture
 

@@ -20,12 +20,19 @@ src/perfmon_mcp/
   log_state.py           -> LogData dataclass + registry (make_log_id, register/get/require_log)
   evidence_integration.py -> optional evidence-store federation, env-var gated
   tools/                 -> one module per tool group; @mcp.tool() at import time
+    _remote.py           -> shared LabLink-first remote-block helper (format_remote_block)
     profiles.py          -> list_counter_profiles, get_counter_profile
-    snapshot.py          -> snapshot_counters, parse_counter_output
-    capture.py           -> get_capture_commands, get_capture_instructions
-    analyze.py           -> load_blg, list_loaded_logs, get_counter_summary,
+    snapshot.py          -> snapshot_counters, parse_counter_output,
+                            discover_counter_sets, parse_counter_sets_output,
+                            discover_nics, parse_nics_output
+    capture.py           -> get_capture_commands, get_capture_instructions,
+                            get_capture_status, parse_capture_status_output
+    analyze.py           -> load_log (canonical), load_csv, load_blg (deprecated alias),
+                            list_loaded_logs, log_info, unload_log, list_blgs,
+                            analyze (mega-tool), get_counter_summary,
                             get_counter_timeline, get_per_queue_summary,
-                            compare_logs
+                            compare_logs(mode='counter'|'per_queue'|'per_cpu')
+    network_lenses.py    -> get_counter_throughput (NIC convenience lens)
     evidence.py          -> get_evidence_status, get_entities
   profiles/              -> ProfileMeta dict + bundled .cset XML
   parsing/
@@ -52,14 +59,16 @@ IDs are explicit so multiple logs can be analyzed concurrently.
 ## Log lifecycle
 
 ```
-load_blg(path)
+load_log(path)   # canonical loader since v0.2 (load_blg is a deprecated alias)
   -> compute log_id (sha256 of path|size|mtime_ns, prefix "log_")
   -> export_dir = <path>.parent / ".perfmon-cache-<stem>"
   -> _load_from_cache: if manifest schema+mtime match, rehydrate from parquet
-  -> else relog.exe <path> -o counters.csv -f csv -t 1
-     parse CSV into DataFrame
-     compute per-counter summary DataFrame
-     write counters.parquet + summary.parquet + manifest.json
+  -> else:
+       - .blg path:  relog.exe <path> -o counters.csv -f csv -t 1
+       - .csv path:  read CSV directly via load_csv path (skips relog)
+       parse CSV into DataFrame
+       compute per-counter summary DataFrame
+       write counters.parquet + summary.parquet + manifest.json
   -> LogData built and registered, returns markdown summary + log_id
 ```
 
@@ -79,33 +88,49 @@ loaded IDs when unknown — propagate that message.
 - **No emojis, no decorative output.** Markdown tables and plain headers
   only.
 - **Every live-execute tool takes `target: str = "local"`.**
-  `"remote"` returns the command, never executes.
+  `"remote"` returns the LabLink-first runbook + JSON sidecar via
+  `tools/_remote.format_remote_block`, never executes.
 
 ## Cache contract
 
 Schema v1, manifest includes `producer in {relog, native, csharp-pdh}`.
 The `relog` producer is the day-1 implementation; the other two values
 are reserved escape hatches so a future native-PDH or C# sidecar replaces
-the shellout without breaking cache compatibility.
+the shellout without breaking cache compatibility. `load_csv` reuses the
+same manifest format with `producer=relog`.
 
 ## Remote-friendly contract (CRITICAL)
 
 1. Every live-execute tool takes `target: str = "local"`. `"local"`
-   executes + returns markdown. `"remote"` returns the
-   PowerShell/`logman` commands as a fenced ```powershell``` block.
-2. Every emit-style tool has a sibling parser (e.g.
-   `parse_counter_output`) that converts raw remote stdout back to the
-   same markdown shape.
+   executes + returns markdown. `"remote"` returns the LabLink-first
+   runbook block built by `tools/_remote.format_remote_block`, which
+   contains a markdown intro, a ```powershell``` fence with the command,
+   and a ```json``` fence with the sidecar (`parse_with`, `shell`,
+   `expected_runtime_s`, `timeout_s`).
+2. Every emit-style tool has a sibling parser
+   (e.g. `parse_counter_output`, `parse_counter_sets_output`,
+   `parse_nics_output`, `parse_capture_status_output`) that converts
+   raw remote stdout back to the same markdown shape.
 3. Every file path is an explicit argument; never defaults to a
    local-only location.
 4. `get_capture_instructions(scenario, target="remote", ...)` runbook
-   names three transports: PowerShell remoting, LabLink (one example
-   MCP transport), and manual scp.
+   lists LabLink (preferred), PowerShell remoting (fallback), and
+   manual scp (fallback) — in that order.
 5. **ZERO imports of any orchestration library** anywhere in `src/`.
-   **ZERO env vars** referencing any orchestration product.
+   **ZERO env vars** referencing any orchestration product. JSON
+   sidecars must contain only primitive key/values (`str`, `int`,
+   `float`, `bool`, `None`).
 
-The `test_remote_zero_coupling.py` test asserts this with a literal
-`rg lablink src/` check.
+The `test_remote_zero_coupling.py` test asserts this with:
+
+- `^\s*(?:import|from)\s+lablink` against every `src/` python file,
+- `LABLINK_[A-Z_]+` against every `src/` python file,
+- `^\s*(?:import|from)\s+(ansible|salt|fabric|paramiko)\b` against
+  every `src/` python file,
+- a positive check that LabLink IS mentioned in the runbook output,
+- a LabLink-first ordering check on the capture runbook,
+- and a JSON-sidecar contract check on every emit-style tool
+  (no python imports, no lablink tokens, primitives only).
 
 ## Running and testing
 

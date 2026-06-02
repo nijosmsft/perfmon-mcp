@@ -1,0 +1,20 @@
+Data Collector Set:         PerfmonMcpWatch
+Status:                     Running
+Root Path:                  C:\PerfLogs\Admin\PerfmonMcpWatch
+Segment:                    Off
+Schedules:                  Off
+Duration:                   0
+Description:                Managed by perfmon-mcp.
+Keywords:                   -
+Latest Output Location:     C:\PerfLogs\Admin\PerfmonMcpWatch\PerfmonMcpWatch_000001.blg
+
+Name:                       PerfmonMcpWatch\Performance Counter
+Type:                       Performance Counter
+Output Location:            C:\PerfLogs\Admin\PerfmonMcpWatch\PerfmonMcpWatch_000001.blg
+File Name:                  PerfmonMcpWatch
+Append:                     Off
+Overwrite:                  Off
+File Format:                Binary
+Log Mode:                   Circular
+File Size:                  512
+The command completed successfully.

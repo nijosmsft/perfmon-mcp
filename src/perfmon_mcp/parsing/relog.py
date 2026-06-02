@@ -208,6 +208,28 @@ def _run_relog(blg_path: Path, csv_path: Path) -> tuple[bool, str]:
     return (True, "")
 
 
+def _detect_csv_encoding(csv_path: Path) -> str:
+    """Sniff the first 4 bytes of ``csv_path`` for a BOM.
+
+    Returns the encoding name to pass to ``pd.read_csv``. PerfMon GUI
+    exports are UTF-16 LE BOM; ``relog.exe -f CSV`` emits ASCII (no
+    BOM); some Office tools write UTF-8 BOM. Default to UTF-8 when no
+    BOM is present.
+    """
+    try:
+        with open(csv_path, "rb") as fh:
+            head = fh.read(4)
+    except OSError:
+        return "utf-8"
+    if head.startswith(b"\xff\xfe"):
+        return "utf-16-le"
+    if head.startswith(b"\xfe\xff"):
+        return "utf-16-be"
+    if head.startswith(b"\xef\xbb\xbf"):
+        return "utf-8-sig"
+    return "utf-8"
+
+
 def parse_relog_csv(csv_path: Path) -> pd.DataFrame:
     """Read the wide CSV produced by relog -f CSV and reshape to long form.
 
@@ -218,6 +240,11 @@ def parse_relog_csv(csv_path: Path) -> pd.DataFrame:
 
     Output columns: ``Timestamp``, ``FullPath``, ``Hostname``,
     ``Object``, ``Instance``, ``Counter``, ``Value``.
+
+    Encoding: the file is BOM-sniffed first. PerfMon GUI exports are
+    UTF-16 LE BOM, ``relog.exe -f CSV`` emits ASCII (no BOM), some
+    tools write UTF-8 BOM. The pandas read uses the detected encoding
+    so a UTF-16 PerfMon export does not silently parse to zero rows.
 
     Rows whose Value cannot be parsed as float are dropped (relog
     sometimes emits a blank or " " for the first sample of a counter).
@@ -234,9 +261,10 @@ def parse_relog_csv(csv_path: Path) -> pd.DataFrame:
     if not csv_path.is_file():
         return pd.DataFrame(columns=columns)
 
+    encoding = _detect_csv_encoding(csv_path)
     try:
-        wide = pd.read_csv(csv_path, dtype=str, keep_default_na=False)
-    except (pd.errors.ParserError, pd.errors.EmptyDataError, OSError):
+        wide = pd.read_csv(csv_path, dtype=str, keep_default_na=False, encoding=encoding)
+    except (pd.errors.ParserError, pd.errors.EmptyDataError, OSError, UnicodeError):
         return pd.DataFrame(columns=columns)
     if wide.empty or wide.shape[1] < 2:
         return pd.DataFrame(columns=columns)

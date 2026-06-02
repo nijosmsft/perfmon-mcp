@@ -1,0 +1,4 @@
+Ethernet	10	Up	1 Gbps	AA-BB-CC-DD-EE-01	Intel(R) I350 Gigabit Network Connection
+TEST-100G-2	12	Up	100 Gbps	AA-BB-CC-DD-EE-02	Mellanox ConnectX-6 Dx Adapter #2
+TEST-100G-1	14	Disconnected	0 bps	AA-BB-CC-DD-EE-03	Mellanox ConnectX-6 Dx Adapter
+vEthernet (Default Switch)	25	Up	10 Gbps	AA-BB-CC-DD-EE-04	Hyper-V Virtual Ethernet Adapter

@@ -12,8 +12,14 @@ Tool list:
 - :func:`get_capture_commands` - paste-ready logman commands (create +
   start/sleep/stop + relog) for one scenario + output path + duration.
 - :func:`get_capture_instructions` - long-form runbook including
-  prerequisites, transfer-back examples (PowerShell remoting / LabLink
-  / scp), and pointers at the analysis tools.
+  prerequisites, transfer-back examples (LabLink first, then
+  PowerShell remoting, then scp), and pointers at the analysis tools.
+- :func:`get_capture_status` - emit ``logman query`` runbook for the
+  managed collector, with a JSON sidecar so any transport (LabLink
+  first) can dispatch it and pipe the stdout to
+  :func:`parse_capture_status_output`.
+- :func:`parse_capture_status_output` - turn raw ``logman query`` stdout
+  back into the same markdown table the local path would have rendered.
 
 Both branch on ``meta.scenario == 'mellanox-percpu'`` to switch the
 counter-list generation between (a) the .cset's wildcard counter paths
@@ -35,6 +41,7 @@ from perfmon_mcp.profiles.metadata import (
     extract_counter_paths,
     load_cset_text,
 )
+from perfmon_mcp.tools._remote import format_remote_block
 
 
 _VALID_TARGETS = ("local", "remote")
@@ -406,15 +413,29 @@ def get_capture_instructions(
         sections.append("")
         sections.append(
             "Pull the `.blg` (and optionally the `.csv`) to the "
-            "analysis machine. Three example transports - pick "
-            "whichever matches your environment. LabLink is one "
-            "example MCP transport; the same shape works with any "
-            "MCP file-transfer tool."
+            "analysis machine. Three example transports - **prefer "
+            "the LabLink (MCP) path** when available because it keeps "
+            "the file transfer inside the same orchestration session "
+            "that ran the capture; the PSRemoting and scp blocks are "
+            "fallbacks for environments without a LabLink agent."
         )
         sections.append("")
         csv_path = _csv_path_for(output_path)
 
-        sections.append("**PowerShell remoting**")
+        sections.append("**LabLink (or any equivalent MCP transport) - preferred**")
+        sections.append("")
+        sections.append("```text")
+        sections.append(
+            f"pull_file(node='<name>', remote_path='{output_path}', "
+            "local_path='C:\\\\local\\\\perfmon\\\\capture.blg')"
+        )
+        sections.append(
+            f"pull_file(node='<name>', remote_path='{csv_path}', "
+            "local_path='C:\\\\local\\\\perfmon\\\\capture.csv')"
+        )
+        sections.append("```")
+        sections.append("")
+        sections.append("**PowerShell remoting (fallback)**")
         sections.append("")
         sections.append("```powershell")
         sections.append("$session = New-PSSession -ComputerName <host>")
@@ -429,20 +450,7 @@ def get_capture_instructions(
         sections.append("Remove-PSSession $session")
         sections.append("```")
         sections.append("")
-        sections.append("**LabLink (or any equivalent MCP transport)**")
-        sections.append("")
-        sections.append("```text")
-        sections.append(
-            f"pull_file(node='<name>', remote_path='{output_path}', "
-            "local_path='C:\\\\local\\\\perfmon\\\\capture.blg')"
-        )
-        sections.append(
-            f"pull_file(node='<name>', remote_path='{csv_path}', "
-            "local_path='C:\\\\local\\\\perfmon\\\\capture.csv')"
-        )
-        sections.append("```")
-        sections.append("")
-        sections.append("**Manual: scp / copy by hand**")
+        sections.append("**Manual: scp / copy by hand (fallback)**")
         sections.append("")
         sections.append("```bash")
         sections.append(
@@ -485,3 +493,131 @@ def get_capture_instructions(
     sections.append("")
 
     return "\n".join(sections) + "\n"
+
+# ---------------------------------------------------------------------------
+# Capture status (logman query)
+# ---------------------------------------------------------------------------
+
+
+def _build_logman_query_command() -> str:
+    """Render the ``logman query`` command for the managed collector.
+
+    Always uses the fixed ``_COLLECTOR_NAME``, so a missing or stopped
+    collector returns a non-zero exit and a recognizable
+    ``Data Collector Set was not found`` stderr line. The parser treats
+    both shapes (started + not-found) as valid outcomes.
+    """
+    return f"logman query '{_COLLECTOR_NAME}'"
+
+
+def _parse_logman_query_text(text: str) -> dict[str, str]:
+    """Parse ``logman query <name>`` stdout into a flat key/value dict.
+
+    The logman output is ``Field: Value`` rows with a leading blank
+    line. We split on the first colon and lowercase the keys for
+    stable lookup. Lines that are not key/value pairs (banners, blank
+    separators) are skipped. Recognizes the "not found" stderr shape
+    and surfaces it as ``status=not_found``.
+    """
+    if not text or not text.strip():
+        return {"status": "no_output", "raw": ""}
+
+    lowered = text.lower()
+    if "data collector set was not found" in lowered or "0x80300002" in lowered:
+        return {"status": "not_found", "raw": text.strip()}
+
+    parsed: dict[str, str] = {"raw": text.strip()}
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip("\r\n").strip()
+        if not line or ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        key_norm = key.strip().lower().replace(" ", "_")
+        if not key_norm:
+            continue
+        parsed.setdefault(key_norm, value.strip())
+
+    if "status" not in parsed:
+        # Heuristic: if the canonical "Status:" row is present it wins;
+        # otherwise infer "running" iff we found a Start Time row.
+        if "start_time" in parsed and parsed["start_time"]:
+            parsed["status"] = "running"
+        else:
+            parsed["status"] = "unknown"
+    return parsed
+
+
+def _format_capture_status(parsed: dict[str, str]) -> str:
+    status = parsed.get("status", "unknown")
+    header = f"**get_capture_status: `{_COLLECTOR_NAME}` -> `{status}`**"
+    if status == "not_found":
+        return (
+            f"{header}\n\n"
+            "No data collector by that name exists. Either the runbook "
+            "was never started, or the teardown step already ran."
+        )
+    if status == "no_output":
+        return f"{header}\n\n*logman produced no output.*"
+
+    rows = [
+        (k.replace("_", " ").title(), v)
+        for k, v in parsed.items()
+        if k not in {"raw", "status"} and v
+    ]
+    body = ""
+    if rows:
+        df = pd.DataFrame(rows, columns=["Field", "Value"])
+        body = "\n\n" + format_table(df, max_rows=50)
+    raw = parsed.get("raw", "")
+    raw_block = ""
+    if raw:
+        raw_block = "\n\n<details><summary>Raw logman output</summary>\n\n```text\n" + raw[:4096] + "\n```\n</details>\n"
+    return f"{header}{body}{raw_block}"
+
+
+@mcp.tool()
+def get_capture_status(target: str = "local") -> str:
+    """Query the managed perfmon collector state via ``logman query``.
+
+    Args:
+        target: ``"local"`` returns a runbook hint plus the same command
+            the remote path emits (the MCP itself never shells out to
+            logman for state queries; this tool is emit-only). The
+            output also includes the LabLink-first JSON sidecar so any
+            transport can dispatch it and feed the stdout back to
+            :func:`parse_capture_status_output`. Default ``"local"``.
+    """
+    target_err = _target_or_error(target)
+    if target_err is not None:
+        return target_err
+
+    command = _build_logman_query_command()
+    intro = (
+        f"**get_capture_status (target={target})**\n\n"
+        f"Queries the state of the managed collector `{_COLLECTOR_NAME}`. "
+        "Run the command below, then feed the stdout back to "
+        "`parse_capture_status_output(text=<stdout>)` to render the same "
+        "table this tool would produce locally."
+    )
+    return format_remote_block(
+        command,
+        parse_with="parse_capture_status_output",
+        expected_runtime_s=2,
+        timeout_s=30,
+        intro=intro,
+    )
+
+
+@mcp.tool()
+def parse_capture_status_output(text: str) -> str:
+    """Render the markdown status table from raw ``logman query`` stdout.
+
+    Args:
+        text: Raw stdout from the command emitted by
+            :func:`get_capture_status`. Both the started shape
+            (Status / Root Path / Segment / ... rows) and the
+            "Data Collector Set was not found" shape are recognized.
+    """
+    if not text or not text.strip():
+        return "*No text provided to parse.*"
+    return _format_capture_status(_parse_logman_query_text(text))

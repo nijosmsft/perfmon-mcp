@@ -1,0 +1,21 @@
+PerfNet-Microsoft-Windows-Process-General	Process counters from the Windows-Process provider.
+Mellanox WinOF-2 Adapter Diagnostics	Diagnostic counters for the Mellanox WinOF-2 NIC driver.
+Mellanox WinOF-2 Adapter QoS	QoS counters for the Mellanox WinOF-2 NIC driver.
+Mellanox WinOF-2 RSS Per Processor	Per-CPU receive-side scaling counters surfaced by the Mellanox WinOF-2 driver.
+Network Adapter	Counters for one network adapter.
+Network Interface	Counters for one network interface.
+Processor	Counters for one logical processor.
+Processor Information	Extended counters for one logical processor.
+Memory	Counters for system memory usage.
+TCPv4	IPv4 TCP counters.
+TCPv6	IPv6 TCP counters.
+UDPv4	IPv4 UDP counters.
+UDPv6	IPv6 UDP counters.
+IPv4	IPv4 counters.
+IPv6	IPv6 counters.
+PhysicalDisk	Counters for one physical disk.
+LogicalDisk	Counters for one logical disk.
+System	System-wide counters.
+Intel(R) Ethernet 10G 2P X710	Counters for the Intel X710 NIC.
+Broadcom NetXtreme-E	Counters for the Broadcom NetXtreme-E NIC.
+SomeVendorRandomSet	A counter set with no recognized vendor prefix.
