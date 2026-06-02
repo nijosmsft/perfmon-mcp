@@ -629,10 +629,20 @@ def get_per_queue_summary(log_id: str, queue_filter: str = "") -> str:
             "Did you capture a profile with `Cpu_N` / `RqNum_N` / "
             "`SqNum_N` / `Queue_N` instances?*"
         )
+    hot_count = int(agg["Hot"].sum()) if "Hot" in agg.columns else 0
+    idle_count = int(agg["Idle"].sum()) if "Idle" in agg.columns else 0
+    total = len(agg)
+    footer = (
+        f"\n\n_{hot_count} of {total} (counter,kind,index) rows flagged "
+        f"hot (Delta > 2x peer-group mean), {idle_count} idle (Delta == 0). "
+        "Hot/Idle are computed per (CounterName, Kind) peer group; "
+        "single-queue groups are never hot._"
+    )
     return (
         f"**Per-queue / per-CPU summary for `{log_id}`** "
-        f"({len(agg)} (counter,kind,index) rows)\n\n"
+        f"({total} (counter,kind,index) rows)\n\n"
         + format_table(agg, max_rows=200)
+        + footer
     )
 
 
@@ -650,6 +660,12 @@ def _compare_per_queue(
 
     Used by ``compare_logs(mode='per_queue'|'per_cpu')``. The
     ``kind_filter`` is "" for all kinds or e.g. "Cpu" for per-CPU only.
+
+    The output includes the test-side ``Hot`` / ``Idle`` peer-group
+    flags from ``per_queue_aggregate`` so the LLM can see at a glance
+    which queues went hot under the test workload — that's the
+    primary "did Toeplitz spread evenly" diagnostic the
+    analyze-mellanox-rss skill produced by hand.
     """
     cols = [
         "CounterName",
@@ -659,21 +675,31 @@ def _compare_per_queue(
         "TestMean",
         "Delta",
         "DeltaPct",
+        "TestHot",
+        "TestIdle",
         "Status",
     ]
 
     def _agg(log: LogData) -> pd.DataFrame:
         if log.counters is None or log.counters.empty:
-            return pd.DataFrame(columns=["CounterName", "Kind", "Index", "Mean"])
+            return pd.DataFrame(
+                columns=["CounterName", "Kind", "Index", "Mean", "Hot", "Idle"]
+            )
         agg = per_queue_aggregate(log.counters)
         if agg.empty:
-            return pd.DataFrame(columns=["CounterName", "Kind", "Index", "Mean"])
+            return pd.DataFrame(
+                columns=["CounterName", "Kind", "Index", "Mean", "Hot", "Idle"]
+            )
         if kind_filter:
             agg = agg[agg["Kind"].str.lower() == kind_filter.lower()]
-        return agg[["CounterName", "Kind", "Index", "Mean"]]
+        return agg[["CounterName", "Kind", "Index", "Mean", "Hot", "Idle"]]
 
-    base = _agg(baseline_log).rename(columns={"Mean": "BaselineMean"})
-    test = _agg(test_log).rename(columns={"Mean": "TestMean"})
+    base = _agg(baseline_log).rename(columns={"Mean": "BaselineMean"})[
+        ["CounterName", "Kind", "Index", "BaselineMean"]
+    ]
+    test = _agg(test_log).rename(
+        columns={"Mean": "TestMean", "Hot": "TestHot", "Idle": "TestIdle"}
+    )
     if base.empty and test.empty:
         return pd.DataFrame(columns=cols)
 
@@ -703,6 +729,13 @@ def _compare_per_queue(
         return "test-only"
 
     merged["Status"] = merged.apply(_status, axis=1)
+    # Rows that exist only on the baseline side won't carry test flags.
+    if "TestHot" not in merged.columns:
+        merged["TestHot"] = False
+    if "TestIdle" not in merged.columns:
+        merged["TestIdle"] = False
+    merged["TestHot"] = merged["TestHot"].fillna(False).astype(bool)
+    merged["TestIdle"] = merged["TestIdle"].fillna(False).astype(bool)
     merged["AbsDelta"] = merged["Delta"].abs()
     merged = merged.sort_values(
         "AbsDelta", ascending=False, na_position="last"
