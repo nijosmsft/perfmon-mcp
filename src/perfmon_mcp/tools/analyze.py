@@ -653,11 +653,20 @@ def compute_rate_from_counter(
     df["NormalizedCounter"] = df["FullPath"].astype(str).map(normalize_counter_name)
 
     if counter_filter:
+        # Validate the regex with Python's `re` engine first; pandas may
+        # delegate to PyArrow which raises ArrowInvalid, not re.error.
+        try:
+            re.compile(counter_filter)
+        except re.error as exc:
+            return (
+                f"*Invalid counter_filter regex `{counter_filter}` for "
+                f"`{log_id}`: {exc}.*"
+            )
         try:
             mask = df["NormalizedCounter"].str.contains(
                 counter_filter, case=False, regex=True, na=False
             )
-        except re.error as exc:
+        except Exception as exc:  # pragma: no cover - defensive
             return (
                 f"*Invalid counter_filter regex `{counter_filter}` for "
                 f"`{log_id}`: {exc}.*"

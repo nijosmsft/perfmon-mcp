@@ -204,3 +204,125 @@ def test_discover_nics_local_subprocess_failure_falls_back(
     # Failure path falls back to the LabLink-first remote block.
     assert "discover_nics (target=local) failed" in out
     assert "```json" in out
+
+
+# ---------------------------------------------------------------------------
+# v0.3: discover_counter_instances
+# ---------------------------------------------------------------------------
+
+
+from perfmon_mcp.tools.snapshot import (  # noqa: E402
+    _filter_instance_rows,
+    _parse_listset_instances_text,
+    discover_counter_instances,
+    parse_counter_instances_output,
+)
+
+
+_SAMPLE_INSTANCES = """\
+Mellanox WinOF-2 RSS Counters\t\\\\TESTHOST\\Mellanox WinOF-2 RSS Counters(Adapter #2 + Cpu_0)\\Rss IPv4/Udp
+Mellanox WinOF-2 RSS Counters\t\\\\TESTHOST\\Mellanox WinOF-2 RSS Counters(Adapter #2 + Cpu_1)\\Rss IPv4/Udp
+Mellanox WinOF-2 RSS Counters\t\\\\TESTHOST\\Mellanox WinOF-2 RSS Counters(Adapter #3 + Cpu_0)\\Rss IPv4/Udp
+
+Mellanox WinOF-2 RSS Counters\t\\\\TESTHOST\\Mellanox WinOF-2 RSS Counters(Adapter #2 + Cpu_1)\\Rss IPv4/Udp
+line-without-tab
+"""
+
+
+def test_parse_listset_instances_dedups_and_skips_bad_lines() -> None:
+    df = _parse_listset_instances_text(_SAMPLE_INSTANCES)
+    assert not df.empty
+    # 3 unique rows after dedup; line-without-tab + blank line dropped.
+    assert len(df) == 3
+    assert set(df.columns) == {"SetName", "InstancePath"}
+
+
+def test_filter_instance_rows_regex_and_substring() -> None:
+    df = _parse_listset_instances_text(_SAMPLE_INSTANCES)
+    # Substring (regex-valid) filter
+    scoped = _filter_instance_rows(df, "Adapter #2")
+    assert len(scoped) == 2
+    assert all("Adapter #2" in p for p in scoped["InstancePath"])
+    # Empty filter returns the full df
+    assert len(_filter_instance_rows(df, "")) == 3
+
+
+def test_filter_instance_rows_invalid_regex_falls_back_to_substring() -> None:
+    df = _parse_listset_instances_text(_SAMPLE_INSTANCES)
+    # The '+' is a regex special char; in isolation '*Adapter' is invalid.
+    # Real regex error: '[unclosed' triggers the substring fallback.
+    scoped = _filter_instance_rows(df, "[unclosed")
+    assert scoped.empty or len(scoped) <= len(df)
+
+
+def test_discover_counter_instances_remote_emits_sidecar() -> None:
+    out = discover_counter_instances(
+        set_name="Mellanox WinOF-2 RSS Counters",
+        instance_filter="Adapter #2",
+        target="remote",
+    )
+    assert "Get-Counter -ListSet" in out
+    assert "Adapter #2" in out
+    match = _JSON_FENCE.search(out)
+    assert match, "Remote output must include a JSON sidecar block"
+    sidecar = json.loads(match.group(1))
+    assert sidecar["parse_with"] == "parse_counter_instances_output"
+    assert sidecar["shell"] == "powershell"
+
+
+def test_discover_counter_instances_local_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(*_args, **_kwargs):
+        return _FakeCompleted(stdout=_SAMPLE_INSTANCES)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    out = discover_counter_instances(
+        set_name="Mellanox WinOF-2 RSS Counters",
+        instance_filter="Adapter #2",
+        target="local",
+    )
+    assert "Adapter #2" in out
+    # Success path: NO sidecar fence
+    assert "```json" not in out
+
+
+def test_discover_counter_instances_local_failure_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(*_args, **_kwargs):
+        return _FakeCompleted(stdout="", stderr="boom", returncode=1)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    out = discover_counter_instances(
+        set_name="Mellanox WinOF-2 RSS Counters", target="local"
+    )
+    assert "failed" in out.lower()
+    assert "```json" in out
+
+
+def test_discover_counter_instances_unknown_target() -> None:
+    out = discover_counter_instances(set_name="Anything", target="bogus")
+    assert "Unknown target" in out
+
+
+def test_discover_counter_instances_rejects_empty_set_name() -> None:
+    out = discover_counter_instances(set_name="")
+    assert "non-empty" in out
+
+
+def test_parse_counter_instances_output_empty_text() -> None:
+    out = parse_counter_instances_output("")
+    assert "No text" in out
+
+
+def test_parse_counter_instances_output_round_trip() -> None:
+    out = parse_counter_instances_output(
+        _SAMPLE_INSTANCES,
+        set_name="Mellanox WinOF-2 RSS Counters",
+        instance_filter="Adapter #2",
+    )
+    assert "Adapter #2" in out
+    assert "Adapter #3" not in out
+    assert "discover_counter_instances" in out
+

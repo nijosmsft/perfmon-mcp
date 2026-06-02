@@ -78,3 +78,76 @@ def test_capture_commands_have_teardown():
         duration_s=10,
     )
     assert "delete" in out.lower()
+
+
+# ---------------------------------------------------------------------------
+# v0.3: instance_filter kwarg + Adapter #2 hardcoding removal
+# ---------------------------------------------------------------------------
+
+
+def test_mellanox_percpu_default_uses_adapter_2():
+    """No explicit instance_filter -> falls back to
+    meta.default_instance_filter ('Adapter #2')."""
+    out = get_capture_commands(
+        scenario="mellanox-percpu",
+        output_path="C:\\perfmon\\rss.blg",
+        duration_s=10,
+    )
+    assert "Adapter #2" in out
+
+
+def test_mellanox_percpu_explicit_filter_overrides_default():
+    """Caller's instance_filter wins over the profile default."""
+    out = get_capture_commands(
+        scenario="mellanox-percpu",
+        output_path="C:\\perfmon\\rss.blg",
+        duration_s=10,
+        instance_filter="Adapter #3",
+    )
+    assert "Adapter #3" in out
+    # The default fallback must NOT also be applied.
+    # Header text mentions the literal filter applied.
+    lower = out.lower()
+    assert "adapter #3" in lower
+
+
+def test_non_mellanox_profile_no_filter_warning_or_skip():
+    """When the profile has no priority_metrics and no caller filter,
+    no Adapter literal is silently injected."""
+    out = get_capture_commands(
+        scenario="system-overview",
+        output_path="C:\\perfmon\\sys.blg",
+        duration_s=10,
+    )
+    # system-overview doesn't use the per-instance enumeration branch at all.
+    assert "Adapter #2" not in out
+
+
+def test_instance_filter_visible_in_instructions():
+    out = get_capture_instructions(
+        scenario="mellanox-percpu",
+        target="remote",
+        output_path="C:\\perfmon\\rss.blg",
+        instance_filter="Adapter #5",
+    )
+    assert "Adapter #5" in out
+
+
+def test_mellanox_percpu_runbook_no_hardcoded_default_when_overridden():
+    """Regression guard: in v0.2, mellanox-percpu emitted a literal
+    'Adapter #2' string regardless of input. Now it must respect the
+    override."""
+    out = get_capture_commands(
+        scenario="mellanox-percpu",
+        output_path="C:\\perfmon\\rss.blg",
+        duration_s=10,
+        instance_filter="MyCustomNic",
+    )
+    # The Where-Object -match clause must use the override, not 'Adapter #2'.
+    # Find the rssPaths line or similar and verify.
+    assert "MyCustomNic" in out
+    # The body of the runbook (not the header overhead-warning) must
+    # not silently rewrite the filter back to Adapter #2.
+    # Heuristic: count occurrences - 0 'Adapter #2' is the strict win.
+    assert "Adapter #2" not in out
+

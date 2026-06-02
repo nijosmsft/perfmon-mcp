@@ -217,3 +217,170 @@ def _extract_log_id(markdown: str) -> str:
                 ):
                     return token
     raise AssertionError(f"No log_id in markdown:\n{markdown}")
+
+
+# ---------------------------------------------------------------------------
+# v0.3: Hot / Idle flags on per_queue_aggregate + footer on get_per_queue_summary
+# ---------------------------------------------------------------------------
+
+
+def _build_queue_counter_df(values_by_index: dict[int, list[float]]) -> pd.DataFrame:
+    """Build a synthetic counters_df with one RqNum_N column per index.
+
+    All samples share a single timestamp grid so per_queue_aggregate
+    has clean per-(counter,kind,index) groups.
+    """
+    rows: list[dict[str, object]] = []
+    for idx, vals in values_by_index.items():
+        full_path = (
+            f"\\\\HOST\\Mellanox Adapter Receive Side Scaling per CPU"
+            f"(RqNum_{idx})\\Packets/sec"
+        )
+        for i, v in enumerate(vals):
+            rows.append(
+                {
+                    "Timestamp": pd.Timestamp(f"2026-01-01 00:00:{i:02d}"),
+                    "FullPath": full_path,
+                    "Hostname": "HOST",
+                    "Object": "Mellanox Adapter Receive Side Scaling per CPU",
+                    "Instance": f"RqNum_{idx}",
+                    "Counter": "Packets/sec",
+                    "Value": v,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def test_per_queue_aggregate_carries_hot_idle_columns():
+    df = _build_queue_counter_df(
+        {0: [100.0, 100.0, 100.0], 1: [200.0, 200.0, 200.0]}
+    )
+    agg = per_queue_aggregate(df)
+    for col in ("Delta", "MaxMinRatio", "Hot", "Idle"):
+        assert col in agg.columns, f"missing column {col}"
+
+
+def test_per_queue_aggregate_flags_idle_when_delta_zero():
+    """A queue whose values never change has Delta=0 -> Idle=True."""
+    df = _build_queue_counter_df(
+        {0: [100.0, 100.0, 100.0], 1: [200.0, 250.0, 300.0]}
+    )
+    agg = per_queue_aggregate(df)
+    idle = agg[agg["Idle"]]
+    not_idle = agg[~agg["Idle"]]
+    assert len(idle) == 1 and idle.iloc[0]["Index"] == 0
+    assert len(not_idle) == 1 and not_idle.iloc[0]["Index"] == 1
+
+
+def test_per_queue_aggregate_flags_hot_above_2x_peer_mean():
+    """One queue with Delta way above peer mean is marked Hot=True."""
+    df = _build_queue_counter_df(
+        {
+            0: [100.0, 105.0, 110.0],   # Delta = 10
+            1: [100.0, 110.0, 120.0],   # Delta = 20
+            2: [100.0, 600.0, 1100.0],  # Delta = 1000 (HOT)
+        }
+    )
+    agg = per_queue_aggregate(df)
+    hot = agg[agg["Hot"]]
+    assert len(hot) == 1
+    assert int(hot.iloc[0]["Index"]) == 2
+
+
+def test_per_queue_aggregate_single_queue_never_hot():
+    """A group with only one queue has no peers, so Hot=False even
+    when Delta is large (intentional - hot needs comparison)."""
+    df = _build_queue_counter_df({0: [0.0, 100000.0, 200000.0]})
+    agg = per_queue_aggregate(df)
+    assert (agg["Hot"] == False).all()  # noqa: E712
+
+
+def test_per_queue_aggregate_maxminratio_handles_zero_min_delta():
+    """When the peer-group min Delta is 0 (e.g. one queue idle), the
+    ratio is NaN (not +inf) to keep tables sortable."""
+    df = _build_queue_counter_df(
+        {0: [100.0, 100.0, 100.0], 1: [100.0, 200.0, 300.0]}
+    )
+    agg = per_queue_aggregate(df)
+    # MaxMinRatio should not be +inf anywhere.
+    assert not (agg["MaxMinRatio"] == float("inf")).any()
+
+
+def test_get_per_queue_summary_footer_reports_hot_idle_counts(
+    mock_relog, fixtures_dir: Path, fake_blg: Path
+):
+    """Footer must surface the hot/idle counts so the LLM can tell
+    that the table needs investigation without re-parsing it."""
+    mock_relog(fixtures_dir / "mellanox-rss-relog.csv")
+    log_id = _extract_log_id(load_blg(path=str(fake_blg)))
+    out = get_per_queue_summary(log_id=log_id)
+    lower = out.lower()
+    # Footer language - flexible to phrasing.
+    assert "hot" in lower
+    assert "idle" in lower
+
+
+# ---------------------------------------------------------------------------
+# v0.3: compute_rate_from_counter
+# ---------------------------------------------------------------------------
+
+
+def test_compute_rate_from_counter_basic(mock_relog, fixtures_dir: Path, fake_blg: Path):
+    from perfmon_mcp.tools.analyze import compute_rate_from_counter
+
+    mock_relog(fixtures_dir / "mellanox-rss-relog.csv")
+    log_id = _extract_log_id(load_blg(path=str(fake_blg)))
+    out = compute_rate_from_counter(log_id=log_id)
+    assert "RatePerSecond" in out
+    assert "DurationSeconds" in out
+    assert "Per-counter rates" in out
+
+
+def test_compute_rate_from_counter_with_filter(
+    mock_relog, fixtures_dir: Path, fake_blg: Path
+):
+    from perfmon_mcp.tools.analyze import compute_rate_from_counter
+
+    mock_relog(fixtures_dir / "mellanox-rss-relog.csv")
+    log_id = _extract_log_id(load_blg(path=str(fake_blg)))
+    out = compute_rate_from_counter(log_id=log_id, counter_filter="RqNum_0")
+    # Filter must scope to a single queue
+    assert "RqNum_0" in out
+    assert "RqNum_3" not in out
+
+
+def test_compute_rate_from_counter_interval_override(
+    mock_relog, fixtures_dir: Path, fake_blg: Path
+):
+    """Passing interval_s overrides the inferred elapsed window."""
+    from perfmon_mcp.tools.analyze import compute_rate_from_counter
+
+    mock_relog(fixtures_dir / "mellanox-rss-relog.csv")
+    log_id = _extract_log_id(load_blg(path=str(fake_blg)))
+    out = compute_rate_from_counter(
+        log_id=log_id, counter_filter="RqNum_0", interval_s=1.0
+    )
+    assert "interval_s=1.0" in out
+
+
+def test_compute_rate_from_counter_rejects_zero_interval(
+    mock_relog, fixtures_dir: Path, fake_blg: Path
+):
+    from perfmon_mcp.tools.analyze import compute_rate_from_counter
+
+    mock_relog(fixtures_dir / "mellanox-rss-relog.csv")
+    log_id = _extract_log_id(load_blg(path=str(fake_blg)))
+    out = compute_rate_from_counter(log_id=log_id, interval_s=0.0)
+    assert "must be positive" in out
+
+
+def test_compute_rate_from_counter_bad_regex(
+    mock_relog, fixtures_dir: Path, fake_blg: Path
+):
+    from perfmon_mcp.tools.analyze import compute_rate_from_counter
+
+    mock_relog(fixtures_dir / "mellanox-rss-relog.csv")
+    log_id = _extract_log_id(load_blg(path=str(fake_blg)))
+    out = compute_rate_from_counter(log_id=log_id, counter_filter="[unclosed")
+    assert "Invalid" in out
+

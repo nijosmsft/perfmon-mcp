@@ -360,13 +360,16 @@ def _filter_instance_rows(df: pd.DataFrame, instance_filter: str) -> pd.DataFram
         pattern = re.compile(needle, re.IGNORECASE)
     except re.error:
         # Fall back to a plain substring match if the filter isn't a valid
-        # regex (PowerShell's -match is regex; we accept either).
-        return df[df["InstancePath"].str.contains(needle, case=False, na=False)].reset_index(
-            drop=True
-        )
+        # regex (PowerShell's -match is regex; we accept either). Pass
+        # regex=False so pandas/PyArrow doesn't re-raise on the invalid
+        # pattern.
+        return df[
+            df["InstancePath"].str.contains(needle, case=False, regex=False, na=False)
+        ].reset_index(drop=True)
     return df[df["InstancePath"].apply(lambda v: bool(pattern.search(str(v))))].reset_index(
         drop=True
     )
+
 
 
 def _format_counter_instances(
