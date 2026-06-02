@@ -19,8 +19,14 @@ def test_server_registers_full_tool_surface():
         "get_capture_commands",
         "get_capture_instructions",
         # analyze
-        "load_blg",
+        "load_log",
+        "load_blg",       # v0.1 deprecated alias kept for compatibility
+        "load_csv",
         "list_loaded_logs",
+        "unload_log",
+        "log_info",
+        "list_blgs",
+        "analyze",
         "get_counter_summary",
         "get_counter_timeline",
         "get_per_queue_summary",
