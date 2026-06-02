@@ -15,11 +15,11 @@ Tools:
 
 from __future__ import annotations
 
-import pandas as pd
+import re
 
 from perfmon_mcp.app import mcp
-from perfmon_mcp.formatting.markdown import format_table
 from perfmon_mcp.log_state import require_log
+from perfmon_mcp.tools.analyze import get_counter_summary
 
 _THROUGHPUT_TERMS: tuple[str, ...] = (
     "bytes total/sec",
@@ -63,11 +63,12 @@ def get_counter_throughput(
 ) -> str:
     """Return Network Adapter throughput counters for a loaded log.
 
-    Filters ``get_counter_summary`` rows down to the curated
-    throughput-relevant set (Bytes Total/sec, Packets/sec, error and
-    discard counters, Current Bandwidth, Output Queue Length) so a
-    typical "what was this NIC pushing during the run" question lands
-    in one table instead of three scrolls.
+    Annotate-and-delegate wrapper over :func:`get_counter_summary`:
+    selects the rows whose normalized counter path matches a curated
+    NIC throughput set (Bytes Total/sec, Packets/sec, error and
+    discard counters, Current Bandwidth, Output Queue Length), narrows
+    by ``nic_filter`` when given, then prepends a NIC-specific header.
+    The underlying summary table (and its column ordering) is unchanged.
 
     Args:
         log_id: ID returned by ``load_log``.
@@ -95,8 +96,8 @@ def get_counter_throughput(
     mask = summary["Counter"].apply(_row_is_throughput) & summary["Counter"].apply(
         lambda c: _row_matches_nic(c, nic_filter)
     )
-    df: pd.DataFrame = summary[mask]
-    if df.empty:
+    matched = summary[mask]
+    if matched.empty:
         scope = "" if nic_filter in ("", "*") else f" matching `{nic_filter}`"
         return (
             f"*No Network Adapter throughput counters{scope} were found in "
@@ -104,11 +105,16 @@ def get_counter_throughput(
             "profile (try the `network` profile next time).*"
         )
 
-    df = df.head(max(top_n, 1))
-    cols = ["Counter", "Samples", "Mean", "Min", "Max", "P50", "P95", "P99"]
-    available = [c for c in cols if c in df.columns]
-    return (
-        f"**NIC throughput for `{log_id}`** "
-        f"(nic_filter=`{nic_filter}`, {len(df)} counters)\n\n"
-        + format_table(df[available], max_rows=top_n + 5)
+    counter_filter = "|".join(
+        re.escape(name) for name in matched["Counter"].astype(str).tolist()
     )
+    delegated = get_counter_summary(
+        log_id=log_id,
+        top_n=top_n,
+        counter_filter=counter_filter,
+    )
+    header = (
+        f"**NIC throughput for `{log_id}`** "
+        f"(nic_filter=`{nic_filter}`, {len(matched)} curated counters)\n\n"
+    )
+    return header + delegated

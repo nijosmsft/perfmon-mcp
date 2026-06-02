@@ -58,7 +58,7 @@ Add the server to your MCP client config (Claude Desktop, Copilot CLI, etc):
 
 ## Tool catalog
 
-The server exposes 24 tools across six areas:
+The server exposes 27 tools across six areas:
 
 ### Discovery
 
@@ -97,7 +97,7 @@ The server exposes 24 tools across six areas:
 | `list_loaded_logs()` | Active log registry. |
 | `log_info(log_id)` | One-log metadata summary (hosts / counter count / duration / cache dir). |
 | `unload_log(log_id)` | Drop a log from the registry (cache stays on disk). |
-| `list_blgs(directory, pattern)` | Enumerate `.blg` files in a directory (size + mtime). |
+| `list_blgs(directory, pattern)` | Enumerate `.blg` files in a directory (size + mtime). `directory` is required — common locations: `$env:USERPROFILE`, `C:\perfmon`, the dir holding `.blg` files you just downloaded via lablink. |
 | `analyze(log_id, sections)` | Mega-tool that composes summary + timeline + per-queue overview into one call. |
 | `get_counter_summary(log_id, top_n)` | Per-counter mean/min/max/p95. |
 | `get_counter_timeline(log_id, counter, bucket_seconds, max_rows)` | Time-bucketed values for one counter. |

@@ -24,6 +24,7 @@ it shells out to ``relog.exe`` (for .blg) or reads the CSV directly
 from __future__ import annotations
 
 import warnings
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -347,7 +348,7 @@ def log_info(log_id: str) -> str:
 
 
 @mcp.tool()
-def list_blgs(directory: str = "C:\\perfmon", pattern: str = "*.blg") -> str:
+def list_blgs(directory: str, pattern: str = "*.blg") -> str:
     """List perfmon log files in a directory.
 
     Lists both ``*.blg`` and ``*.csv`` files by default (any pattern
@@ -356,10 +357,21 @@ def list_blgs(directory: str = "C:\\perfmon", pattern: str = "*.blg") -> str:
     is at the top.
 
     Args:
-        directory: Directory to search. Default ``C:\\perfmon``.
+        directory: Directory to search. Required, no default — callers
+            must pass an explicit path. Common locations to try:
+            ``$env:USERPROFILE``, ``C:\\perfmon`` (if you have one),
+            or the directory holding the .blg files you just downloaded
+            via lablink.
         pattern: Glob for binary captures. Default ``*.blg``. The .csv
             siblings produced by the capture runbook are also surfaced.
     """
+    if not directory:
+        return (
+            "Directory is required (no default). Common locations to try: "
+            "`$env:USERPROFILE`, `C:\\perfmon` (if you have one), or the "
+            "directory holding the .blg files you just downloaded via "
+            "lablink."
+        )
     log_dir = Path(directory).expanduser()
     if not log_dir.exists():
         return f"Directory not found: `{directory}`."
@@ -508,17 +520,42 @@ def analyze(log_id: str, sections: str = "") -> str:
 
 
 @mcp.tool()
-def get_counter_summary(log_id: str, top_n: int = 50) -> str:
+def get_counter_summary(
+    log_id: str,
+    top_n: int = 50,
+    counter_filter: str = "",
+) -> str:
     """Return the per-counter mean / min / max / p50 / p95 / p99 table.
 
     Args:
         log_id: ID from ``load_log``.
         top_n: Cap the table to the top N counters by mean. Default 50.
+        counter_filter: Optional case-insensitive regex applied to the
+            normalized ``Counter`` column. When empty (default) all
+            counters are eligible. Used by convenience lenses (e.g.
+            :func:`network_lenses.get_counter_throughput`) to delegate
+            their narrowed view back through this single formatter.
     """
     log = require_log(log_id)
     summary = log.summary
     if summary is None or summary.empty:
         return f"*No counter summary available for `{log_id}`.*"
+    if counter_filter:
+        try:
+            mask = summary["Counter"].str.contains(
+                counter_filter, case=False, regex=True, na=False
+            )
+        except re.error as exc:
+            return (
+                f"*Invalid counter_filter regex `{counter_filter}` for "
+                f"`{log_id}`: {exc}.*"
+            )
+        summary = summary[mask]
+        if summary.empty:
+            return (
+                f"*No counters in `{log_id}` matched "
+                f"`counter_filter={counter_filter}`.*"
+            )
     df = summary.head(max(top_n, 1))
     cols = ["Counter", "Samples", "Mean", "Min", "Max", "P50", "P95", "P99"]
     available = [c for c in cols if c in df.columns]
