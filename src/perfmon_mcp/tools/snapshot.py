@@ -13,6 +13,12 @@ Tools:
   pick which sets to capture without trial-and-error.
 - ``parse_counter_sets_output(text, vendor_filter)`` rebuilds the
   markdown table from remote stdout.
+- ``discover_counter_instances(set_name, instance_filter, target)``
+  enumerates the per-instance paths for one counter set via
+  ``(Get-Counter -ListSet '<set>').PathsWithInstances``, optionally
+  filtered (e.g. ``'Adapter #2'`` for a single NIC).
+- ``parse_counter_instances_output(text, set_name, instance_filter)``
+  rebuilds the per-instance markdown table from remote stdout.
 - ``discover_nics(target)`` enumerates NICs (``Get-NetAdapter``).
 - ``parse_nics_output(text)`` rebuilds the markdown table from remote
   stdout.
@@ -44,6 +50,7 @@ from perfmon_mcp.tools._remote import format_remote_block
 _VALID_TARGETS = ("local", "remote")
 _GETCOUNTER_TIMEOUT_S = 60
 _LISTSET_TIMEOUT_S = 120
+_LISTSET_INSTANCES_TIMEOUT_S = 120
 _NETADAPTER_TIMEOUT_S = 30
 
 
@@ -281,6 +288,108 @@ def _format_nics(df: pd.DataFrame) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Counter-instance enumeration (PathsWithInstances)
+# ---------------------------------------------------------------------------
+
+
+def _build_listset_instances_command(set_name: str, instance_filter: str) -> str:
+    """Render the PowerShell that enumerates per-instance paths for a counter set.
+
+    Wraps ``(Get-Counter -ListSet '<set>').PathsWithInstances``, optionally
+    filtered by ``-match '<instance_filter>'``. Emits ``<set>\\t<path>`` per
+    line so the parser doesn't depend on column widths. Single quotes inside
+    ``set_name`` are doubled to keep the PowerShell string literal valid.
+    """
+    safe_set = set_name.replace("'", "''")
+    if instance_filter:
+        safe_filter = instance_filter.replace("'", "''")
+        filter_clause = f" | Where-Object {{ $_ -match '{safe_filter}' }}"
+    else:
+        filter_clause = ""
+    return (
+        f"(Get-Counter -ListSet '{safe_set}').PathsWithInstances"
+        f"{filter_clause} | "
+        f"ForEach-Object {{ \"{safe_set}`t$_\" }}"
+    )
+
+
+def _parse_listset_instances_text(text: str) -> pd.DataFrame:
+    """Parse tab-separated ``<set name>\\t<instance path>`` lines.
+
+    Lines without a tab are skipped; the runbook only emits the tab-separated
+    shape on success. The parser tolerates trailing whitespace and blank
+    lines but does NOT attempt to infer a set name when none was emitted.
+    """
+    cols = ["SetName", "InstancePath"]
+    if not text:
+        return pd.DataFrame(columns=cols)
+    rows: list[dict[str, str]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip("\r\n")
+        if not line.strip():
+            continue
+        if "\t" not in line:
+            continue
+        set_name, _, path = line.partition("\t")
+        set_name = set_name.strip()
+        path = path.strip()
+        if not set_name or not path:
+            continue
+        rows.append({"SetName": set_name, "InstancePath": path})
+    df = pd.DataFrame(rows, columns=cols)
+    if not df.empty:
+        df = df.drop_duplicates(subset=["SetName", "InstancePath"]).reset_index(
+            drop=True
+        )
+    return df
+
+
+def _filter_instance_rows(df: pd.DataFrame, instance_filter: str) -> pd.DataFrame:
+    """Apply the post-hoc ``instance_filter`` (used by the parser path).
+
+    The remote runbook already injects the ``-match`` clause server-side; the
+    parser-side filter is the safety net for stdout pasted back without the
+    clause (e.g. a human ran the unfiltered command by mistake).
+    """
+    if df.empty or not instance_filter:
+        return df
+    needle = instance_filter.strip()
+    if not needle:
+        return df
+    try:
+        pattern = re.compile(needle, re.IGNORECASE)
+    except re.error:
+        # Fall back to a plain substring match if the filter isn't a valid
+        # regex (PowerShell's -match is regex; we accept either).
+        return df[df["InstancePath"].str.contains(needle, case=False, na=False)].reset_index(
+            drop=True
+        )
+    return df[df["InstancePath"].apply(lambda v: bool(pattern.search(str(v))))].reset_index(
+        drop=True
+    )
+
+
+def _format_counter_instances(
+    df: pd.DataFrame, set_name: str, instance_filter: str
+) -> str:
+    if df.empty:
+        scope = f" matching `{instance_filter}`" if instance_filter else ""
+        return (
+            f"*No counter-set instances{scope} were found for "
+            f"`{set_name}`. Verify the set name with "
+            "`discover_counter_sets(vendor_filter='<vendor>')`.*"
+        )
+    header_filter = f", filter=`{instance_filter}`" if instance_filter else ""
+    return (
+        f"**discover_counter_instances** "
+        f"(set=`{set_name}`{header_filter}; {len(df)} instances)\n\n"
+        + format_table(df, max_rows=max(len(df) + 1, 200))
+        + "\n\nFeed any subset of `InstancePath` into a logman `-cf` file "
+        "or a future custom-profile registration.\n"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
 
@@ -502,3 +611,107 @@ def parse_nics_output(text: str) -> str:
         return "*No text provided to parse.*"
     df = _parse_netadapter_text(text)
     return _format_nics(df)
+
+
+@mcp.tool()
+def discover_counter_instances(
+    set_name: str,
+    instance_filter: str = "",
+    target: str = "local",
+) -> str:
+    """Enumerate per-instance counter paths for one PDH counter set.
+
+    Wraps ``(Get-Counter -ListSet '<set>').PathsWithInstances`` with an
+    optional regex filter. Use this after ``discover_counter_sets`` has
+    confirmed the set name on the target; the returned ``InstancePath``
+    column is exactly the string a ``logman -cf`` file expects.
+
+    Args:
+        set_name: Exact CounterSetName (case-sensitive) from
+            ``discover_counter_sets``, e.g.
+            ``"Mellanox WinOF-2 RSS Per Processor"``.
+        instance_filter: Optional regex applied via PowerShell
+            ``-match`` to narrow the result set (e.g. ``"Adapter #2"``
+            to scope to the data NIC, or ``"RqNum"`` for receive
+            queues only). Empty means "no filter — every instance".
+        target: ``"local"`` spawns powershell.exe. ``"remote"`` returns
+            the LabLink-first runbook + JSON sidecar; feed stdout to
+            ``parse_counter_instances_output``.
+    """
+    if not set_name or not set_name.strip():
+        return (
+            "`set_name` must be a non-empty counter-set name (e.g. "
+            "`'Mellanox WinOF-2 RSS Per Processor'`). Call "
+            "`discover_counter_sets()` to enumerate registered sets."
+        )
+    if target not in _VALID_TARGETS:
+        return (
+            f"Unknown target `{target}`. Valid: "
+            f"{', '.join(_VALID_TARGETS)}."
+        )
+
+    command = _build_listset_instances_command(set_name, instance_filter)
+
+    if target == "remote":
+        intro = (
+            "**discover_counter_instances (target=remote)**\n\n"
+            f"Enumerating instances for set `{set_name}`"
+            + (f" matching `{instance_filter}`" if instance_filter else "")
+            + ". Run on the target node, then feed stdout back to "
+            f"`parse_counter_instances_output(text=<stdout>, "
+            f"set_name='{set_name}', instance_filter='{instance_filter}')`."
+        )
+        return format_remote_block(
+            command,
+            parse_with="parse_counter_instances_output",
+            expected_runtime_s=10,
+            timeout_s=_LISTSET_INSTANCES_TIMEOUT_S,
+            intro=intro,
+        )
+
+    stdout, err = _run_powershell_local(command, _LISTSET_INSTANCES_TIMEOUT_S)
+    if err:
+        return format_remote_block(
+            command,
+            parse_with="parse_counter_instances_output",
+            expected_runtime_s=10,
+            timeout_s=_LISTSET_INSTANCES_TIMEOUT_S,
+            intro=(
+                "**discover_counter_instances (target=local) failed**\n\n"
+                f"Error: {err}\n\n"
+                "Dispatch the command below via any transport and feed the "
+                "stdout to `parse_counter_instances_output`."
+            ),
+        )
+    df = _filter_instance_rows(_parse_listset_instances_text(stdout), instance_filter)
+    return _format_counter_instances(df, set_name, instance_filter)
+
+
+@mcp.tool()
+def parse_counter_instances_output(
+    text: str,
+    set_name: str = "",
+    instance_filter: str = "",
+) -> str:
+    """Render the instances markdown table from raw remote stdout.
+
+    Args:
+        text: Tab-separated ``<set name>\\t<instance path>`` lines as
+            produced by the command emitted by
+            ``discover_counter_instances``.
+        set_name: Optional set name used only in the markdown header
+            when the parsed rows are empty.
+        instance_filter: Same filter as ``discover_counter_instances``;
+            applied as a safety net in case the remote command was
+            invoked without the ``-match`` clause.
+    """
+    if not text or not text.strip():
+        return "*No text provided to parse.*"
+    df = _filter_instance_rows(
+        _parse_listset_instances_text(text), instance_filter
+    )
+    # If the caller didn't pass set_name, infer the most common one from rows.
+    if not set_name and not df.empty and "SetName" in df.columns:
+        set_name = df["SetName"].mode().iloc[0]
+    return _format_counter_instances(df, set_name or "(unknown)", instance_filter)
+
