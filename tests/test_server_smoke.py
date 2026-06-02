@@ -15,6 +15,10 @@ def test_server_registers_full_tool_surface():
         # snapshot
         "snapshot_counters",
         "parse_counter_output",
+        "discover_counter_sets",
+        "parse_counter_sets_output",
+        "discover_nics",
+        "parse_nics_output",
         # capture
         "get_capture_commands",
         "get_capture_instructions",
