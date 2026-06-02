@@ -1,0 +1,6 @@
+"(PDH-CSV 4.0) (Pacific Standard Time)(480)","\\TESTHOST\Mellanox Adapter Receive Side Scaling per CPU(RqNum_0)\Packets/sec","\\TESTHOST\Mellanox Adapter Receive Side Scaling per CPU(RqNum_1)\Packets/sec","\\TESTHOST\Mellanox Adapter Receive Side Scaling per CPU(RqNum_2)\Packets/sec","\\TESTHOST\Mellanox Adapter Receive Side Scaling per CPU(RqNum_3)\Packets/sec","\\TESTHOST\Mellanox Adapter Send Side Scaling per CPU(SqNum_0)\Packets/sec","\\TESTHOST\Mellanox Adapter Send Side Scaling per CPU(SqNum_1)\Packets/sec"
+"12/01/2026 10:00:00.000","125000","118000","132000","127000","98000","102000"
+"12/01/2026 10:00:01.000","130000","122000","138000","131000","101000","105000"
+"12/01/2026 10:00:02.000","128000","120000","135000","129000","99500","103500"
+"12/01/2026 10:00:03.000","132000","124000","140000","133000","102000","106000"
+"12/01/2026 10:00:04.000","127000","119000","134000","128000","100000","104000"
