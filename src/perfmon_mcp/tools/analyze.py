@@ -23,6 +23,7 @@ from pathlib import Path
 import pandas as pd
 
 from perfmon_mcp.app import mcp
+from perfmon_mcp.evidence_integration import safe_register_entities_from_log
 from perfmon_mcp.formatting.markdown import format_table
 from perfmon_mcp.log_state import (
     LogData,
@@ -163,6 +164,7 @@ def load_blg(path: str, force: bool = False) -> str:
     )
     _materialize_log_data(log)
     register_log(log)
+    safe_register_entities_from_log(log)
     return _build_log_summary(log, source, errors)
 
 
