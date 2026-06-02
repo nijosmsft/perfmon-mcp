@@ -35,6 +35,8 @@ def test_server_registers_full_tool_surface():
         "get_counter_timeline",
         "get_per_queue_summary",
         "compare_logs",
+        # network lenses
+        "get_counter_throughput",
         # evidence
         "get_evidence_status",
         "get_entities",
