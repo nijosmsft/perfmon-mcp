@@ -16,7 +16,15 @@ returns the same markdown shape as the local path.
 
 ## Status
 
-v0.2.0. Adds the `analyze` mega-tool, registry tools
+v0.3.0. Absorbs the `analyze-mellanox-rss` skill into a discoverable MCP
+surface — adds `discover_counter_instances`, `get_teardown_commands`,
+`get_rss_distribution`, `compute_rate_from_counter`, hot/idle peer-group
+flags on `get_per_queue_summary`, and an `instance_filter` kwarg on
+`get_capture_commands` / `get_capture_instructions`. Profile metadata
+now carries `priority_metrics` and `default_instance_filter`. All v0.2
+tools and the LabLink-first remote contract are preserved.
+
+v0.2.0 added the `analyze` mega-tool, registry tools
 (`load_log`/`load_csv`/`unload_log`/`log_info`/`list_blgs`),
 counter-set / NIC / capture-status discovery tools, a NIC throughput
 convenience lens, and LabLink-first remote runbooks (with JSON sidecars)
@@ -58,7 +66,7 @@ Add the server to your MCP client config (Claude Desktop, Copilot CLI, etc):
 
 ## Tool catalog
 
-The server exposes 27 tools across six areas:
+The server exposes 34 tools across six areas:
 
 ### Discovery
 
@@ -68,6 +76,8 @@ The server exposes 27 tools across six areas:
 | `get_counter_profile(scenario)` | Metadata + counter list + analysis-tool affinity for one profile. |
 | `discover_counter_sets(target, vendor_filter)` | List installed PDH counter sets via `Get-Counter -ListSet *`, vendor-tagged (Mellanox / Intel / Broadcom / Microsoft / Other). |
 | `parse_counter_sets_output(text, vendor_filter)` | Re-render the same table from raw remote stdout. |
+| `discover_counter_instances(set_name, instance_filter, target)` | Enumerate per-instance counter paths for one PDH counter set via `(Get-Counter -ListSet '<set>').PathsWithInstances`; supports a regex filter (e.g. `'Adapter #2'`). |
+| `parse_counter_instances_output(text, set_name, instance_filter)` | Re-render the instances table from raw remote stdout. |
 | `discover_nics(target)` | Enumerate NICs via `Get-NetAdapter` (Name, IfIndex, Status, LinkSpeed, MAC, Description). |
 | `parse_nics_output(text)` | Re-render the table from raw remote stdout. |
 
@@ -82,10 +92,12 @@ The server exposes 27 tools across six areas:
 
 | Tool | Purpose |
 |---|---|
-| `get_capture_commands(scenario, output_path, duration_s)` | Paste-ready 6-step logman commands (create / start / stop / relog / teardown / verify). |
-| `get_capture_instructions(scenario, target, output_path)` | Full runbook including remote transfer-back examples (LabLink preferred, PSRemoting / scp fallbacks). |
+| `get_capture_commands(scenario, output_path, duration_s, instance_filter)` | Paste-ready 6-step logman commands (create / start / stop / relog / teardown / verify). `instance_filter` narrows per-instance counter enumeration; defaults to the profile's `default_instance_filter` (`'Adapter #2'` for `mellanox-percpu`). |
+| `get_capture_instructions(scenario, target, output_path, instance_filter)` | Full runbook including remote transfer-back examples (LabLink preferred, PSRemoting / scp fallbacks). |
 | `get_capture_status(target)` | Emit-only `logman query` for the managed collector + LabLink-first JSON sidecar. |
 | `parse_capture_status_output(text)` | Render the markdown status table from raw `logman query` stdout. |
+| `get_teardown_commands(collector_name, target)` | Emit-only force-cleanup runbook: stop + delete the managed collector + Stop-Process for any straggler perfmon / typeperf / relog / logman processes. |
+| `parse_teardown_output(text, collector_name)` | Render the verification block from raw teardown stdout (empty stdout = collector gone). |
 
 ### Analyze (load a captured .blg or .csv)
 
@@ -99,10 +111,12 @@ The server exposes 27 tools across six areas:
 | `unload_log(log_id)` | Drop a log from the registry (cache stays on disk). |
 | `list_blgs(directory, pattern)` | Enumerate `.blg` files in a directory (size + mtime). `directory` is required — common locations: `$env:USERPROFILE`, `C:\perfmon`, the dir holding `.blg` files you just downloaded via lablink. |
 | `analyze(log_id, sections)` | Mega-tool that composes summary + timeline + per-queue overview into one call. |
-| `get_counter_summary(log_id, top_n)` | Per-counter mean/min/max/p95. |
+| `get_counter_summary(log_id, top_n, counter_filter)` | Per-counter mean/min/max/p95. |
 | `get_counter_timeline(log_id, counter, bucket_seconds, max_rows)` | Time-bucketed values for one counter. |
-| `get_per_queue_summary(log_id, queue_filter)` | Per-NIC-RSS-queue aggregation, generic by counter-set. |
-| `get_counter_throughput(log_id, nic_filter, top_n)` | NIC convenience lens; narrows the summary to Network Adapter throughput rows. |
+| `compute_rate_from_counter(log_id, counter_filter, interval_s)` | Per-counter rate aggregator for monotonic raw totals: `(last - first) / DurationSeconds`. `interval_s` overrides the inferred elapsed window. |
+| `get_per_queue_summary(log_id, queue_filter)` | Per-NIC-RSS-queue aggregation; v0.3 surfaces `Delta`, `MaxMinRatio`, `Hot`, and `Idle` peer-group flags plus a footer summary. |
+| `get_counter_throughput(log_id, nic_filter, top_n)` | NIC throughput convenience lens; narrows the summary to Network Adapter throughput rows. |
+| `get_rss_distribution(log_id, adapter_filter, scenario_hint)` | RSS-specific lens scoped to the 13 curated Mellanox WinOF-2 counter names from the `analyze-mellanox-rss` skill; split into per-CPU + per-RqNum + per-SqNum sections with hot/idle counts in each section header. |
 | `compare_logs(baseline_log_id, test_log_id, top_n, mode)` | A/B delta table sorted by largest swing. `mode='counter'\|'per_queue'\|'per_cpu'`. |
 
 ### Evidence federation (optional)
@@ -123,6 +137,74 @@ The server exposes 27 tools across six areas:
 
 The Mellanox profiles absorb the standalone `mellanox-rss-metrics` PowerShell
 skill into a single discoverable counter-set surface.
+
+## Mellanox NIC RSS workflow (v0.3)
+
+The `analyze-mellanox-rss` skill was a standalone PowerShell workflow for
+diagnosing RSS queue load distribution on Windows hosts with NVIDIA
+ConnectX adapters (WinOF-2 driver). v0.3 absorbs that workflow into
+the MCP surface so the LLM can drive every step through tool calls,
+without leaving the model loop.
+
+A typical end-to-end run:
+
+1. **Discover the right NIC and instance string.**
+
+   ```
+   discover_nics(target="local")
+   discover_counter_sets(vendor_filter="mellanox", target="local")
+   discover_counter_instances(
+       set_name="Mellanox WinOF-2 RSS Counters",
+       instance_filter="Adapter #2",
+       target="local",
+   )
+   ```
+
+   The returned `InstancePath` column is exactly the string `logman -cf`
+   expects, and the filter you used here will be reused at capture time.
+
+2. **Capture per-CPU + per-RqNum + per-SqNum counters.**
+
+   ```
+   get_capture_commands(
+       scenario="mellanox-percpu",
+       output_path="C:\\perfmon\\rss.blg",
+       duration_s=10,
+       instance_filter="Adapter #2",
+   )
+   ```
+
+   The 6-step logman block emits the 394-column variant; it carries a
+   prominent **~28pp delivery cost** warning. Use `mellanox-rss`
+   (cheap, NDIS-poll-mode counter only) for any run where delivery
+   rate matters.
+
+3. **Force-teardown if something went sideways mid-flight.**
+
+   ```
+   get_teardown_commands(collector_name="PerfmonMcpWatch", target="local")
+   ```
+
+   Safe to run repeatedly — every verb is no-op-tolerant.
+
+4. **Analyze the resulting .blg.**
+
+   ```
+   load_log(path="C:\\perfmon\\rss.blg")
+   get_rss_distribution(log_id="<id>", adapter_filter="Adapter #2")
+   get_per_queue_summary(log_id="<id>")  # Hot/Idle peer-group flags
+   compute_rate_from_counter(log_id="<id>", counter_filter="NDIS poll mode")
+   ```
+
+   `get_rss_distribution` returns per-CPU / per-RqNum / per-SqNum
+   tables scoped to the 13 curated WinOF-2 RSS counters, with
+   `Hot`/`Idle` flags from the per-queue peer-group math. Every
+   section header reports how many rows are hot vs idle so the LLM
+   can spot queue imbalance at a glance.
+
+All capture-side tools are emit-only (no logman shellout from the MCP
+process); pass `target="remote"` on any of the above to get the
+LabLink-first runbook + JSON sidecar instead of a local execution.
 
 ## Remote workflows
 

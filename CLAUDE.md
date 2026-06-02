@@ -24,15 +24,18 @@ src/perfmon_mcp/
     profiles.py          -> list_counter_profiles, get_counter_profile
     snapshot.py          -> snapshot_counters, parse_counter_output,
                             discover_counter_sets, parse_counter_sets_output,
+                            discover_counter_instances, parse_counter_instances_output,
                             discover_nics, parse_nics_output
     capture.py           -> get_capture_commands, get_capture_instructions,
-                            get_capture_status, parse_capture_status_output
+                            get_capture_status, parse_capture_status_output,
+                            get_teardown_commands, parse_teardown_output
     analyze.py           -> load_log (canonical), load_csv, load_blg (deprecated alias),
                             list_loaded_logs, log_info, unload_log, list_blgs,
                             analyze (mega-tool), get_counter_summary,
-                            get_counter_timeline, get_per_queue_summary,
-                            compare_logs(mode='counter'|'per_queue'|'per_cpu')
-    network_lenses.py    -> get_counter_throughput (NIC convenience lens)
+                            get_counter_timeline, compute_rate_from_counter,
+                            get_per_queue_summary, compare_logs(mode=...)
+    network_lenses.py    -> get_counter_throughput (NIC throughput lens),
+                            get_rss_distribution (Mellanox RSS lens)
     evidence.py          -> get_evidence_status, get_entities
   profiles/              -> ProfileMeta dict + bundled .cset XML
   parsing/
