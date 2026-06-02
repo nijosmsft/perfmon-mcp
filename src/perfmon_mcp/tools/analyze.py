@@ -705,15 +705,23 @@ def compare_logs(
     test_log = require_log(test_log_id)
 
     if mode == "counter":
+        baseline_counters = (
+            baseline_log.counters
+            if baseline_log.counters is not None
+            else pd.DataFrame()
+        )
+        test_counters = (
+            test_log.counters if test_log.counters is not None else pd.DataFrame()
+        )
         baseline_summary = (
             baseline_log.summary
             if baseline_log.summary is not None
-            else summarize_counters(baseline_log.counters or pd.DataFrame())
+            else summarize_counters(baseline_counters)
         )
         test_summary = (
             test_log.summary
             if test_log.summary is not None
-            else summarize_counters(test_log.counters or pd.DataFrame())
+            else summarize_counters(test_counters)
         )
         delta = compare_summaries(baseline_summary, test_summary, top_n=top_n)
         if delta.empty:
