@@ -151,3 +151,54 @@ def test_mellanox_percpu_runbook_no_hardcoded_default_when_overridden():
     # Heuristic: count occurrences - 0 'Adapter #2' is the strict win.
     assert "Adapter #2" not in out
 
+
+# ---------------------------------------------------------------------------
+# v0.3 regression: Step 0 of get_capture_commands must NOT pass
+# -ErrorAction to logman.exe (native EXE, not a cmdlet). Same bug as
+# get_teardown_commands - see tests/test_teardown.py for the full
+# write-up.
+# ---------------------------------------------------------------------------
+
+import re as _re  # noqa: E402
+
+_LOGMAN_NATIVE_BAD_FLAG = _re.compile(
+    r"logman\s+(stop|delete)[^\n;]*-ErrorAction",
+    _re.IGNORECASE,
+)
+
+
+def test_capture_step0_does_not_pass_erroraction_to_native_logman():
+    """Step 0 ('Clean any stale collector') used the same broken
+    pattern as get_teardown_commands prior to v0.3. The fix drops
+    -ErrorAction from the logman invocations and keeps '2>&1 |
+    Out-Null' as the silent-absorb mechanism."""
+    out = get_capture_commands(
+        scenario="system-overview",
+        output_path="C:\\perfmon\\test.blg",
+        duration_s=10,
+    )
+    hits = _LOGMAN_NATIVE_BAD_FLAG.findall(out)
+    assert hits == [], (
+        "logman.exe is native, not a cmdlet - -ErrorAction passed to "
+        f"logman stop/delete crashes the binary. Found {len(hits)} "
+        f"violation(s) in Step 0: {hits!r}"
+    )
+
+
+def test_capture_step0_still_has_cleanup_verbs():
+    """Belt-and-braces: after dropping -ErrorAction the Step 0 cleanup
+    must still issue both logman stop and logman delete so a stale
+    collector from a previous run is actually removed before
+    'logman create counter' runs."""
+    out = get_capture_commands(
+        scenario="system-overview",
+        output_path="C:\\perfmon\\test.blg",
+        duration_s=10,
+    )
+    # Step 0 cleanup
+    assert "logman stop PerfmonMcpWatch" in out
+    assert "logman delete PerfmonMcpWatch" in out
+    # And the silent-absorb mechanism is the one logman.exe DOES
+    # understand: shell redirection, not a cmdlet parameter.
+    assert "2>&1 | Out-Null" in out
+

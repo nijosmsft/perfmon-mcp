@@ -234,8 +234,12 @@ def _build_logman_commands(
         f"# Capture: scenario={meta.scenario}, blg={blg_path}, duration={duration_s}s\n"
         "\n"
         "# Step 0 - Clean any stale collector with the same name.\n"
-        f"logman stop {_COLLECTOR_NAME} -ErrorAction SilentlyContinue 2>&1 | Out-Null\n"
-        f"logman delete {_COLLECTOR_NAME} -ErrorAction SilentlyContinue 2>&1 | Out-Null\n"
+        "# Note: logman.exe is a native EXE, not a cmdlet - PowerShell common\n"
+        "# parameters like -ErrorAction are NOT supported and produce\n"
+        "# 'Argument is unknown' errors. Use '2>&1 | Out-Null' alone to\n"
+        "# silently absorb 'no such collector' on a clean machine.\n"
+        f"logman stop {_COLLECTOR_NAME} 2>&1 | Out-Null\n"
+        f"logman delete {_COLLECTOR_NAME} 2>&1 | Out-Null\n"
         "\n"
         "# Step 1 - Materialize the counter-list file used by -cf.\n"
         f"{counter_step}"
@@ -703,11 +707,28 @@ def _build_teardown_command(collector_name: str) -> str:
     The errors and Out-Null are deliberate — this is the "I don't care
     what state the box is in, just make sure nothing's collecting"
     cleanup.
+
+    Important: ``logman.exe`` is a native executable, NOT a PowerShell
+    cmdlet. It does not understand common parameters like
+    ``-ErrorAction SilentlyContinue`` — passing them causes
+    ``logman`` to emit ``Argument 'EA' is unknown`` /
+    ``Argument 'SilentlyContinue' is unknown`` and exit with
+    ``E_INVALIDARG`` (-2147024809). Because the trailing
+    ``2>&1 | Out-Null`` swallows the message the failure looks silent
+    and neither ``logman stop`` nor ``logman delete`` actually run.
+    Use ``2>&1 | Out-Null`` alone to absorb the benign
+    ``Data Collector Set was not found`` line on a clean box.
+
+    Keep ``-ErrorAction SilentlyContinue`` on the
+    ``Get-Process ... | Stop-Process`` pipeline — those ARE cmdlets
+    and the parameter is meaningful (suppresses the noisy
+    ``Cannot find a process with the name`` exceptions when nothing
+    is running).
     """
     safe_name = collector_name.replace("'", "''")
     return (
-        f"logman stop '{safe_name}' -ErrorAction SilentlyContinue 2>&1 | Out-Null; "
-        f"logman delete '{safe_name}' -ErrorAction SilentlyContinue 2>&1 | Out-Null; "
+        f"logman stop '{safe_name}' 2>&1 | Out-Null; "
+        f"logman delete '{safe_name}' 2>&1 | Out-Null; "
         "Get-Process -Name perfmon, typeperf, relog, logman "
         "-ErrorAction SilentlyContinue | Stop-Process -Force "
         "-ErrorAction SilentlyContinue; "
