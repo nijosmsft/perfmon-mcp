@@ -26,6 +26,8 @@ def test_server_registers_full_tool_surface():
         "get_capture_instructions",
         "get_capture_status",
         "parse_capture_status_output",
+        "get_teardown_commands",
+        "parse_teardown_output",
         # analyze
         "load_log",
         "load_blg",       # v0.1 deprecated alias kept for compatibility
@@ -37,10 +39,12 @@ def test_server_registers_full_tool_surface():
         "analyze",
         "get_counter_summary",
         "get_counter_timeline",
+        "compute_rate_from_counter",
         "get_per_queue_summary",
         "compare_logs",
         # network lenses
         "get_counter_throughput",
+        "get_rss_distribution",
         # evidence
         "get_evidence_status",
         "get_entities",

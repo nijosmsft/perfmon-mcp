@@ -686,3 +686,131 @@ def parse_capture_status_output(text: str) -> str:
     if not text or not text.strip():
         return "*No text provided to parse.*"
     return _format_capture_status(_parse_logman_query_text(text))
+
+
+# ---------------------------------------------------------------------------
+# Teardown (force-clean the managed collector + any orphan perfmon processes)
+# ---------------------------------------------------------------------------
+
+
+def _build_teardown_command(collector_name: str) -> str:
+    """Render the force-teardown command for one collector + perfmon procs.
+
+    PowerShell verbs only — ``logman stop`` (best-effort, ignores errors
+    if the collector isn't running), ``logman delete`` (best-effort
+    likewise), then ``Stop-Process -Force`` on any straggler perfmon
+    processes (perfmon.exe / typeperf.exe / relog.exe / logman.exe).
+    The errors and Out-Null are deliberate — this is the "I don't care
+    what state the box is in, just make sure nothing's collecting"
+    cleanup.
+    """
+    safe_name = collector_name.replace("'", "''")
+    return (
+        f"logman stop '{safe_name}' -ErrorAction SilentlyContinue 2>&1 | Out-Null; "
+        f"logman delete '{safe_name}' -ErrorAction SilentlyContinue 2>&1 | Out-Null; "
+        "Get-Process -Name perfmon, typeperf, relog, logman "
+        "-ErrorAction SilentlyContinue | Stop-Process -Force "
+        "-ErrorAction SilentlyContinue; "
+        f"logman query 2>&1 | Select-String -Pattern '{safe_name}'"
+    )
+
+
+def _format_teardown(collector_name: str, text: str) -> str:
+    """Render the teardown stdout as a friendly markdown block.
+
+    The teardown command runs through several no-op-tolerant verbs and
+    the final ``logman query | Select-String`` is the verification
+    step: an empty result means the collector is gone. We treat ANY
+    non-empty match as "still present" and call it out so the caller
+    can rerun.
+    """
+    header = f"**get_teardown_commands: `{collector_name}`**"
+    body = (text or "").strip()
+    if not body:
+        return (
+            f"{header}\n\n"
+            f"Teardown complete; `logman query | Select-String "
+            f"'{collector_name}'` produced no output (collector is "
+            "gone)."
+        )
+    return (
+        f"{header}\n\n"
+        f"Teardown ran. Verification output still mentions the "
+        f"collector — rerun if needed:\n\n```text\n"
+        f"{body[:4096]}\n```"
+    )
+
+
+@mcp.tool()
+def get_teardown_commands(
+    collector_name: str = _COLLECTOR_NAME,
+    target: str = "local",
+) -> str:
+    """Emit a force-teardown runbook for a perfmon data collector.
+
+    The MCP itself never shells out for this — both ``target='local'``
+    and ``target='remote'`` return the same emit-only LabLink-first
+    runbook + JSON sidecar, so the caller can dispatch the cleanup
+    via any transport (LabLink for a lab node, PSRemoting, manual
+    paste on the console).
+
+    Use this when an earlier ``get_capture_commands`` run aborted
+    mid-flight (the Step-5 teardown didn't execute), or when you
+    suspect another orchestration session left a stale collector
+    running. Safe to call repeatedly; every step is no-op-tolerant.
+
+    Args:
+        collector_name: Name of the collector to tear down. Default
+            ``"PerfmonMcpWatch"`` matches the fixed name used by
+            ``get_capture_commands``.
+        target: ``"local"`` or ``"remote"`` — both emit the same
+            block; the label only changes the intro text.
+    """
+    target_err = _target_or_error(target)
+    if target_err is not None:
+        return target_err
+    if not collector_name or not collector_name.strip():
+        return (
+            "`collector_name` must be a non-empty string. Default is "
+            f"`{_COLLECTOR_NAME}` (the name used by "
+            "`get_capture_commands`)."
+        )
+
+    command = _build_teardown_command(collector_name)
+    intro = (
+        f"**get_teardown_commands (target={target})**\n\n"
+        f"Force-cleans the managed collector `{collector_name}` plus "
+        "any straggler perfmon / typeperf / relog / logman "
+        "processes. Run the command below, then feed the stdout back "
+        "to `parse_teardown_output(text=<stdout>, "
+        f"collector_name='{collector_name}')` to render the "
+        "verification block."
+    )
+    return format_remote_block(
+        command,
+        parse_with="parse_teardown_output",
+        expected_runtime_s=5,
+        timeout_s=30,
+        intro=intro,
+    )
+
+
+@mcp.tool()
+def parse_teardown_output(
+    text: str,
+    collector_name: str = _COLLECTOR_NAME,
+) -> str:
+    """Render the teardown verification block from raw remote stdout.
+
+    Args:
+        text: Raw stdout from the command emitted by
+            :func:`get_teardown_commands`. The expected good output is
+            empty (no rows match the collector name); any other text
+            indicates the collector is still present.
+        collector_name: Name to render in the header. Default
+            ``"PerfmonMcpWatch"``.
+    """
+    if text is None:
+        return "*No text provided to parse.*"
+    return _format_teardown(collector_name, text)
+

@@ -12,6 +12,7 @@ explicit so multiple logs can be analyzed concurrently):
 - :func:`analyze` - mega-tool composing the standard sections.
 - :func:`get_counter_summary`
 - :func:`get_counter_timeline`
+- :func:`compute_rate_from_counter`
 - :func:`get_per_queue_summary`
 - :func:`compare_logs` (now with ``mode='counter'|'per_queue'|'per_cpu'``).
 
@@ -44,7 +45,9 @@ from perfmon_mcp.log_state import (
 from perfmon_mcp.parsing.aggregator import (
     bucket_timeline,
     compare_summaries,
+    normalize_counter_name,
     per_queue_aggregate,
+    split_counter_path,
     summarize_counters,
 )
 from perfmon_mcp.parsing.relog import (
@@ -597,6 +600,146 @@ def get_counter_timeline(
         f"**Counter timeline `{counter}` in `{log_id}`** "
         f"(bucket={bucket_seconds}s, {len(df)} of {len(timeline)} buckets)\n\n"
         + format_table(df, max_rows=max_rows + 5)
+    )
+
+
+@mcp.tool()
+def compute_rate_from_counter(
+    log_id: str,
+    counter_filter: str = "",
+    interval_s: float | None = None,
+) -> str:
+    """Derive a per-second rate from a monotonic raw counter.
+
+    Some perfmon counters are exposed as raw monotonically-increasing
+    totals (e.g. the Mellanox WinOF-2 per-CPU "Packets processed in
+    NDIS poll mode" counter). To get a rate from those you have to
+    take ``last - first`` and divide by the elapsed wall-clock
+    seconds in the log. This tool does that per
+    ``(FullPath / Instance / Counter)`` row and returns a sorted
+    table.
+
+    Args:
+        log_id: ID returned by ``load_log``.
+        counter_filter: Case-insensitive regex matched against the
+            normalized counter name. Empty includes every counter in
+            the log (rate is still meaningful for non-monotonic
+            counters but should be treated as "mean per second"
+            rather than a true rate).
+        interval_s: Override the elapsed window used as the
+            denominator. When ``None`` (default), the per-counter
+            ``max(Timestamp) - min(Timestamp)`` is used (in seconds).
+            Pass this when the trace has long idle padding and you
+            only want to rate over the active window.
+
+    Output columns: ``Counter``, ``Instance``, ``First``, ``Last``,
+    ``Delta``, ``DurationSeconds``, ``RatePerSecond``, ``Samples``.
+    Sorted by ``RatePerSecond`` descending.
+    """
+    log = require_log(log_id)
+    counters = log.counters
+    if counters is None or counters.empty:
+        return f"*No counters loaded for `{log_id}`.*"
+
+    required_cols = {"FullPath", "Value", "Timestamp"}
+    missing = required_cols - set(counters.columns)
+    if missing:
+        return (
+            f"*Counters table for `{log_id}` is missing columns "
+            f"{sorted(missing)}; cannot compute rates.*"
+        )
+
+    df = counters.copy()
+    df["NormalizedCounter"] = df["FullPath"].astype(str).map(normalize_counter_name)
+
+    if counter_filter:
+        try:
+            mask = df["NormalizedCounter"].str.contains(
+                counter_filter, case=False, regex=True, na=False
+            )
+        except re.error as exc:
+            return (
+                f"*Invalid counter_filter regex `{counter_filter}` for "
+                f"`{log_id}`: {exc}.*"
+            )
+        df = df[mask]
+        if df.empty:
+            return (
+                f"*No counters in `{log_id}` matched "
+                f"`counter_filter={counter_filter}`.*"
+            )
+
+    if interval_s is not None and interval_s <= 0:
+        return (
+            "*`interval_s` must be positive when provided. Pass "
+            "`None` to use the per-counter elapsed window.*"
+        )
+
+    df["NumericValue"] = pd.to_numeric(df["Value"], errors="coerce")
+    df["NumericTimestamp"] = pd.to_datetime(
+        df["Timestamp"], errors="coerce"
+    )
+
+    rows: list[dict[str, object]] = []
+    grouped = df.groupby("FullPath", sort=False)
+    for full_path, group in grouped:
+        sorted_group = group.sort_values("NumericTimestamp")
+        values = sorted_group["NumericValue"].dropna()
+        if values.empty:
+            continue
+        first = float(values.iloc[0])
+        last = float(values.iloc[-1])
+        delta = last - first
+
+        if interval_s is not None:
+            duration = float(interval_s)
+        else:
+            ts = sorted_group["NumericTimestamp"].dropna()
+            if len(ts) < 2:
+                duration = 0.0
+            else:
+                duration = (ts.iloc[-1] - ts.iloc[0]).total_seconds()
+
+        if duration > 0:
+            rate = delta / duration
+        else:
+            rate = float("nan")
+
+        _, _, instance, counter_name = split_counter_path(str(full_path))
+        rows.append(
+            {
+                "Counter": counter_name,
+                "Instance": instance,
+                "First": first,
+                "Last": last,
+                "Delta": delta,
+                "DurationSeconds": duration,
+                "RatePerSecond": rate,
+                "Samples": int(len(values)),
+            }
+        )
+
+    if not rows:
+        return (
+            f"*No numeric samples in `{log_id}` matched the filter; "
+            "nothing to rate.*"
+        )
+
+    out = pd.DataFrame(rows).sort_values(
+        "RatePerSecond", ascending=False, na_position="last"
+    )
+    header_scope = (
+        f", counter_filter=`{counter_filter}`" if counter_filter else ""
+    )
+    duration_note = (
+        f" using interval_s={interval_s}"
+        if interval_s is not None
+        else " using per-counter elapsed window"
+    )
+    return (
+        f"**Per-counter rates for `{log_id}`** "
+        f"({len(out)} rows{header_scope}{duration_note})\n\n"
+        + format_table(out, max_rows=max(len(out) + 5, 50))
     )
 
 
