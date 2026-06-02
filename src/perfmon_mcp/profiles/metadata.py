@@ -38,6 +38,16 @@ class ProfileMeta:
             per-CPU ~28pp warning). Surfaced verbatim by tool output.
         notes: Free-form notes / caveats.
         cset_filename: Name of the bundled ``.cset`` resource.
+        priority_metrics: Curated counter-name shortlist for the
+            convenience lens (e.g. ``get_rss_distribution`` filters
+            ``per_queue_aggregate`` rows down to this list). Empty for
+            scenarios that don't have an attached lens.
+        default_instance_filter: Default value for the
+            ``instance_filter`` kwarg on the capture tools when the
+            caller doesn't pass one (e.g. ``"Adapter #2"`` for the
+            Mellanox per-CPU profile so it doesn't sweep every NIC on
+            the box). Empty means "no filter — enumerate all
+            instances".
     """
 
     scenario: str
@@ -51,6 +61,8 @@ class ProfileMeta:
     overhead_notes: str = ""
     notes: str = ""
     cset_filename: str = ""
+    priority_metrics: list[str] = field(default_factory=list)
+    default_instance_filter: str = ""
 
 
 PROFILES: dict[str, ProfileMeta] = {
@@ -129,6 +141,10 @@ PROFILES: dict[str, ProfileMeta] = {
             "explicit enumeration variant."
         ),
         cset_filename="mellanox-rss.cset",
+        priority_metrics=[
+            "Packets processed in NDIS poll mode",
+        ],
+        default_instance_filter="",
     ),
     "mellanox-percpu": ProfileMeta(
         scenario="mellanox-percpu",
@@ -166,9 +182,27 @@ PROFILES: dict[str, ProfileMeta] = {
         notes=(
             "The .cset file uses wildcard counter paths; the capture-time "
             "logman command does the per-instance enumeration via the "
-            "Adapter #2 filter on the source system."
+            "instance filter configured for this profile (defaults to "
+            "``<adapter>`` = ``Adapter #2`` on the project's standard test "
+            "hardware). The default is configurable via "
+            "``default_instance_filter`` on the ProfileMeta; override "
+            "per-call by passing ``instance_filter=`` to "
+            "``get_capture_commands`` / ``get_capture_instructions``."
         ),
         cset_filename="mellanox-percpu.cset",
+        priority_metrics=[
+            "Rss IPv4 Only",
+            "Rss IPv4/Udp",
+            "Rss IPv4/Tcp",
+            "Rss IPv6 Only",
+            "Rss IPv6/Udp",
+            "Rss IPv6/Tcp",
+            "Encapsulated Rss IPv4/Udp",
+            "NonRss IPv4",
+            "DpcWatchDog Starvation",
+            "Interrupts on incorrect cpu",
+        ],
+        default_instance_filter="Adapter #2",
     ),
 }
 

@@ -12,6 +12,7 @@ explicit so multiple logs can be analyzed concurrently):
 - :func:`analyze` - mega-tool composing the standard sections.
 - :func:`get_counter_summary`
 - :func:`get_counter_timeline`
+- :func:`compute_rate_from_counter`
 - :func:`get_per_queue_summary`
 - :func:`compare_logs` (now with ``mode='counter'|'per_queue'|'per_cpu'``).
 
@@ -44,7 +45,9 @@ from perfmon_mcp.log_state import (
 from perfmon_mcp.parsing.aggregator import (
     bucket_timeline,
     compare_summaries,
+    normalize_counter_name,
     per_queue_aggregate,
+    split_counter_path,
     summarize_counters,
 )
 from perfmon_mcp.parsing.relog import (
@@ -601,6 +604,155 @@ def get_counter_timeline(
 
 
 @mcp.tool()
+def compute_rate_from_counter(
+    log_id: str,
+    counter_filter: str = "",
+    interval_s: float | None = None,
+) -> str:
+    """Derive a per-second rate from a monotonic raw counter.
+
+    Some perfmon counters are exposed as raw monotonically-increasing
+    totals (e.g. the Mellanox WinOF-2 per-CPU "Packets processed in
+    NDIS poll mode" counter). To get a rate from those you have to
+    take ``last - first`` and divide by the elapsed wall-clock
+    seconds in the log. This tool does that per
+    ``(FullPath / Instance / Counter)`` row and returns a sorted
+    table.
+
+    Args:
+        log_id: ID returned by ``load_log``.
+        counter_filter: Case-insensitive regex matched against the
+            normalized counter name. Empty includes every counter in
+            the log (rate is still meaningful for non-monotonic
+            counters but should be treated as "mean per second"
+            rather than a true rate).
+        interval_s: Override the elapsed window used as the
+            denominator. When ``None`` (default), the per-counter
+            ``max(Timestamp) - min(Timestamp)`` is used (in seconds).
+            Pass this when the trace has long idle padding and you
+            only want to rate over the active window.
+
+    Output columns: ``Counter``, ``Instance``, ``First``, ``Last``,
+    ``Delta``, ``DurationSeconds``, ``RatePerSecond``, ``Samples``.
+    Sorted by ``RatePerSecond`` descending.
+    """
+    log = require_log(log_id)
+    counters = log.counters
+    if counters is None or counters.empty:
+        return f"*No counters loaded for `{log_id}`.*"
+
+    required_cols = {"FullPath", "Value", "Timestamp"}
+    missing = required_cols - set(counters.columns)
+    if missing:
+        return (
+            f"*Counters table for `{log_id}` is missing columns "
+            f"{sorted(missing)}; cannot compute rates.*"
+        )
+
+    df = counters.copy()
+    df["NormalizedCounter"] = df["FullPath"].astype(str).map(normalize_counter_name)
+
+    if counter_filter:
+        # Validate the regex with Python's `re` engine first; pandas may
+        # delegate to PyArrow which raises ArrowInvalid, not re.error.
+        try:
+            re.compile(counter_filter)
+        except re.error as exc:
+            return (
+                f"*Invalid counter_filter regex `{counter_filter}` for "
+                f"`{log_id}`: {exc}.*"
+            )
+        try:
+            mask = df["NormalizedCounter"].str.contains(
+                counter_filter, case=False, regex=True, na=False
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            return (
+                f"*Invalid counter_filter regex `{counter_filter}` for "
+                f"`{log_id}`: {exc}.*"
+            )
+        df = df[mask]
+        if df.empty:
+            return (
+                f"*No counters in `{log_id}` matched "
+                f"`counter_filter={counter_filter}`.*"
+            )
+
+    if interval_s is not None and interval_s <= 0:
+        return (
+            "*`interval_s` must be positive when provided. Pass "
+            "`None` to use the per-counter elapsed window.*"
+        )
+
+    df["NumericValue"] = pd.to_numeric(df["Value"], errors="coerce")
+    df["NumericTimestamp"] = pd.to_datetime(
+        df["Timestamp"], errors="coerce"
+    )
+
+    rows: list[dict[str, object]] = []
+    grouped = df.groupby("FullPath", sort=False)
+    for full_path, group in grouped:
+        sorted_group = group.sort_values("NumericTimestamp")
+        values = sorted_group["NumericValue"].dropna()
+        if values.empty:
+            continue
+        first = float(values.iloc[0])
+        last = float(values.iloc[-1])
+        delta = last - first
+
+        if interval_s is not None:
+            duration = float(interval_s)
+        else:
+            ts = sorted_group["NumericTimestamp"].dropna()
+            if len(ts) < 2:
+                duration = 0.0
+            else:
+                duration = (ts.iloc[-1] - ts.iloc[0]).total_seconds()
+
+        if duration > 0:
+            rate = delta / duration
+        else:
+            rate = float("nan")
+
+        _, _, instance, counter_name = split_counter_path(str(full_path))
+        rows.append(
+            {
+                "Counter": counter_name,
+                "Instance": instance,
+                "First": first,
+                "Last": last,
+                "Delta": delta,
+                "DurationSeconds": duration,
+                "RatePerSecond": rate,
+                "Samples": int(len(values)),
+            }
+        )
+
+    if not rows:
+        return (
+            f"*No numeric samples in `{log_id}` matched the filter; "
+            "nothing to rate.*"
+        )
+
+    out = pd.DataFrame(rows).sort_values(
+        "RatePerSecond", ascending=False, na_position="last"
+    )
+    header_scope = (
+        f", counter_filter=`{counter_filter}`" if counter_filter else ""
+    )
+    duration_note = (
+        f" using interval_s={interval_s}"
+        if interval_s is not None
+        else " using per-counter elapsed window"
+    )
+    return (
+        f"**Per-counter rates for `{log_id}`** "
+        f"({len(out)} rows{header_scope}{duration_note})\n\n"
+        + format_table(out, max_rows=max(len(out) + 5, 50))
+    )
+
+
+@mcp.tool()
 def get_per_queue_summary(log_id: str, queue_filter: str = "") -> str:
     """Aggregate per-instance counters by queue / CPU index.
 
@@ -629,10 +781,20 @@ def get_per_queue_summary(log_id: str, queue_filter: str = "") -> str:
             "Did you capture a profile with `Cpu_N` / `RqNum_N` / "
             "`SqNum_N` / `Queue_N` instances?*"
         )
+    hot_count = int(agg["Hot"].sum()) if "Hot" in agg.columns else 0
+    idle_count = int(agg["Idle"].sum()) if "Idle" in agg.columns else 0
+    total = len(agg)
+    footer = (
+        f"\n\n_{hot_count} of {total} (counter,kind,index) rows flagged "
+        f"hot (Delta > 2x peer-group mean), {idle_count} idle (Delta == 0). "
+        "Hot/Idle are computed per (CounterName, Kind) peer group; "
+        "single-queue groups are never hot._"
+    )
     return (
         f"**Per-queue / per-CPU summary for `{log_id}`** "
-        f"({len(agg)} (counter,kind,index) rows)\n\n"
+        f"({total} (counter,kind,index) rows)\n\n"
         + format_table(agg, max_rows=200)
+        + footer
     )
 
 
@@ -650,6 +812,12 @@ def _compare_per_queue(
 
     Used by ``compare_logs(mode='per_queue'|'per_cpu')``. The
     ``kind_filter`` is "" for all kinds or e.g. "Cpu" for per-CPU only.
+
+    The output includes the test-side ``Hot`` / ``Idle`` peer-group
+    flags from ``per_queue_aggregate`` so the LLM can see at a glance
+    which queues went hot under the test workload — that's the
+    primary "did Toeplitz spread evenly" diagnostic the
+    analyze-mellanox-rss skill produced by hand.
     """
     cols = [
         "CounterName",
@@ -659,21 +827,31 @@ def _compare_per_queue(
         "TestMean",
         "Delta",
         "DeltaPct",
+        "TestHot",
+        "TestIdle",
         "Status",
     ]
 
     def _agg(log: LogData) -> pd.DataFrame:
         if log.counters is None or log.counters.empty:
-            return pd.DataFrame(columns=["CounterName", "Kind", "Index", "Mean"])
+            return pd.DataFrame(
+                columns=["CounterName", "Kind", "Index", "Mean", "Hot", "Idle"]
+            )
         agg = per_queue_aggregate(log.counters)
         if agg.empty:
-            return pd.DataFrame(columns=["CounterName", "Kind", "Index", "Mean"])
+            return pd.DataFrame(
+                columns=["CounterName", "Kind", "Index", "Mean", "Hot", "Idle"]
+            )
         if kind_filter:
             agg = agg[agg["Kind"].str.lower() == kind_filter.lower()]
-        return agg[["CounterName", "Kind", "Index", "Mean"]]
+        return agg[["CounterName", "Kind", "Index", "Mean", "Hot", "Idle"]]
 
-    base = _agg(baseline_log).rename(columns={"Mean": "BaselineMean"})
-    test = _agg(test_log).rename(columns={"Mean": "TestMean"})
+    base = _agg(baseline_log).rename(columns={"Mean": "BaselineMean"})[
+        ["CounterName", "Kind", "Index", "BaselineMean"]
+    ]
+    test = _agg(test_log).rename(
+        columns={"Mean": "TestMean", "Hot": "TestHot", "Idle": "TestIdle"}
+    )
     if base.empty and test.empty:
         return pd.DataFrame(columns=cols)
 
@@ -703,6 +881,13 @@ def _compare_per_queue(
         return "test-only"
 
     merged["Status"] = merged.apply(_status, axis=1)
+    # Rows that exist only on the baseline side won't carry test flags.
+    if "TestHot" not in merged.columns:
+        merged["TestHot"] = False
+    if "TestIdle" not in merged.columns:
+        merged["TestIdle"] = False
+    merged["TestHot"] = merged["TestHot"].fillna(False).astype(bool)
+    merged["TestIdle"] = merged["TestIdle"].fillna(False).astype(bool)
     merged["AbsDelta"] = merged["Delta"].abs()
     merged = merged.sort_values(
         "AbsDelta", ascending=False, na_position="last"

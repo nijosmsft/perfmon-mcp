@@ -215,7 +215,8 @@ def per_queue_aggregate(
     For every counter whose instance string contains ``RqNum_N`` /
     ``SqNum_N`` / ``Queue_N`` / ``Cpu_N`` we extract the kind+index
     and emit one row per (CounterName, Kind, Index) with summary
-    stats across all samples.
+    stats across all samples, plus hot/idle flags computed within
+    each (CounterName, Kind) peer group.
 
     Args:
         counters_df: Long-form counters DataFrame from a loaded log.
@@ -223,8 +224,21 @@ def per_queue_aggregate(
             applied to the counter name; empty means no filter.
 
     Columns: ``CounterName``, ``Kind``, ``Index``, ``Instance``,
-    ``Samples``, ``Mean``, ``Min``, ``Max``, ``P95``, ``Object``,
-    ``Hostname``.
+    ``Samples``, ``Mean``, ``Min``, ``Max``, ``P95``, ``Delta``,
+    ``MaxMinRatio``, ``Hot``, ``Idle``, ``Object``, ``Hostname``.
+
+    Where:
+      * ``Delta`` = ``Max - Min`` for the row's value series — the
+        "amplitude" of the counter on that queue.
+      * ``MaxMinRatio`` = ``Max(Delta) / Min(Delta)`` across every
+        queue in the same (CounterName, Kind) peer group. Surfaces
+        Toeplitz-hash unevenness. ``NaN`` when the peer-group min
+        delta is 0 (otherwise the ratio is +inf and not actionable);
+        also ``NaN`` for single-queue groups.
+      * ``Hot`` = ``Delta > 2 * mean(Delta)`` within the (CounterName,
+        Kind) peer group. Always ``False`` for single-queue groups.
+      * ``Idle`` = ``Delta == 0`` — the counter never moved during
+        the capture, which usually means that queue saw no traffic.
     """
     cols = [
         "CounterName",
@@ -236,6 +250,10 @@ def per_queue_aggregate(
         "Min",
         "Max",
         "P95",
+        "Delta",
+        "MaxMinRatio",
+        "Hot",
+        "Idle",
         "Object",
         "Hostname",
     ]
@@ -253,6 +271,13 @@ def per_queue_aggregate(
             continue
         kind, idx = queue
         values = pd.to_numeric(group["Value"], errors="coerce")
+        has_values = bool(values.notna().any())
+        v_min = float(values.min()) if has_values else float("nan")
+        v_max = float(values.max()) if has_values else float("nan")
+        if has_values:
+            delta = v_max - v_min
+        else:
+            delta = float("nan")
         rows.append(
             {
                 "CounterName": counter_name,
@@ -260,18 +285,58 @@ def per_queue_aggregate(
                 "Index": idx,
                 "Instance": inst,
                 "Samples": int(values.notna().sum()),
-                "Mean": float(values.mean()) if values.notna().any() else float("nan"),
-                "Min": float(values.min()) if values.notna().any() else float("nan"),
-                "Max": float(values.max()) if values.notna().any() else float("nan"),
+                "Mean": float(values.mean()) if has_values else float("nan"),
+                "Min": v_min,
+                "Max": v_max,
                 "P95": percentile(values, 95),
+                "Delta": delta,
+                "MaxMinRatio": float("nan"),
+                "Hot": False,
+                "Idle": (delta == 0.0) if has_values else False,
                 "Object": obj,
                 "Hostname": host,
             }
         )
 
     df = pd.DataFrame(rows, columns=cols)
-    if not df.empty:
-        df = df.sort_values(["CounterName", "Kind", "Index"]).reset_index(drop=True)
+    if df.empty:
+        return df
+
+    # Compute peer-group hot/idle flags within each (CounterName, Kind)
+    # group. Single-queue groups stay Hot=False; MaxMinRatio is NaN when
+    # the group min Delta is 0 (otherwise the ratio is +inf and not
+    # actionable) and for single-queue groups.
+    grouped = df.groupby(["CounterName", "Kind"], sort=False)
+    group_size = grouped["Delta"].transform("size")
+    group_mean = grouped["Delta"].transform("mean")
+    group_min = grouped["Delta"].transform("min")
+    group_max = grouped["Delta"].transform("max")
+
+    # Hot: only meaningful when there are >= 2 peers AND the group
+    # mean delta is > 0; otherwise the comparison is degenerate.
+    hot_mask = (
+        (group_size >= 2)
+        & group_mean.notna()
+        & (group_mean > 0)
+        & df["Delta"].notna()
+        & (df["Delta"] > 2.0 * group_mean)
+    )
+    df["Hot"] = hot_mask.fillna(False).astype(bool)
+
+    # MaxMinRatio: NaN when single-queue group OR when group min == 0
+    # OR when either side is NaN.
+    ratio_mask = (
+        (group_size >= 2)
+        & group_min.notna()
+        & group_max.notna()
+        & (group_min > 0)
+    )
+    df["MaxMinRatio"] = float("nan")
+    df.loc[ratio_mask, "MaxMinRatio"] = (
+        group_max[ratio_mask] / group_min[ratio_mask]
+    ).astype(float)
+
+    df = df.sort_values(["CounterName", "Kind", "Index"]).reset_index(drop=True)
     return df
 
 
