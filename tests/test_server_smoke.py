@@ -22,6 +22,8 @@ def test_server_registers_full_tool_surface():
         # capture
         "get_capture_commands",
         "get_capture_instructions",
+        "get_capture_status",
+        "parse_capture_status_output",
         # analyze
         "load_log",
         "load_blg",       # v0.1 deprecated alias kept for compatibility
