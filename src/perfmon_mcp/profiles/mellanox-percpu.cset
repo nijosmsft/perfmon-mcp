@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  mellanox-percpu.cset - HEAVY per-instance enumeration.
+
+  The .cset itself uses wildcard counter paths because the on-disk
+  format does not support runtime per-instance enumeration. The
+  capture-time logman command (in tools/capture.py) substitutes the
+  explicit per-CPU / per-RqNum / per-SqNum paths filtered to "Adapter
+  #2" so the resulting .blg carries hundreds of per-instance columns.
+
+  WARNING: ~28pp delivery cost at 400K offered load.
+
+  Use only for distribution diagnostics (which CPU is hottest, is the
+  Toeplitz hash uneven). NEVER use for perf baselines. Relative ratios
+  across CPUs / queues ARE preserved (the cost is uniform), but
+  absolute perf numbers from this run should NOT be compared to a non-
+  instrumented baseline.
+-->
+<CounterSet name="mellanox-percpu">
+  <Counters>
+    <Counter>\Mellanox WinOF-2 Rss Counters(*)\*</Counter>
+    <Counter>\Mellanox WinOF-2 Receive Datapath Counters(*)\*</Counter>
+    <Counter>\Mellanox WinOF-2 Transmit Datapath Counters(*)\*</Counter>
+  </Counters>
+</CounterSet>

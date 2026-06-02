@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  system-overview.cset - lowest-overhead "what is happening on this box".
+  Total CPU, available memory, disk activity, per-NIC throughput.
+  Suitable for live snapshot (Get-Counter) or long capture (logman).
+-->
+<CounterSet name="system-overview">
+  <Counters>
+    <Counter>\Processor(_Total)\% Processor Time</Counter>
+    <Counter>\Processor(_Total)\% Privileged Time</Counter>
+    <Counter>\Processor(_Total)\% User Time</Counter>
+    <Counter>\Memory\Available MBytes</Counter>
+    <Counter>\Memory\Committed Bytes</Counter>
+    <Counter>\Memory\Pages/sec</Counter>
+    <Counter>\PhysicalDisk(_Total)\% Disk Time</Counter>
+    <Counter>\PhysicalDisk(_Total)\Disk Transfers/sec</Counter>
+    <Counter>\PhysicalDisk(_Total)\Disk Bytes/sec</Counter>
+    <Counter>\Network Interface(*)\Bytes Total/sec</Counter>
+    <Counter>\Network Interface(*)\Packets/sec</Counter>
+    <Counter>\System\Processor Queue Length</Counter>
+    <Counter>\System\Context Switches/sec</Counter>
+  </Counters>
+</CounterSet>

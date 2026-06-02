@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  cpu-detailed.cset - per-CPU breakdown for hot-CPU diagnosis.
+  Each \Processor(*) instance is emitted per logical CPU plus _Total.
+  Add DPC and interrupt rates so we can spot DPC storms on a single CPU.
+-->
+<CounterSet name="cpu-detailed">
+  <Counters>
+    <Counter>\Processor(*)\% Processor Time</Counter>
+    <Counter>\Processor(*)\% Privileged Time</Counter>
+    <Counter>\Processor(*)\% User Time</Counter>
+    <Counter>\Processor(*)\% Interrupt Time</Counter>
+    <Counter>\Processor(*)\% DPC Time</Counter>
+    <Counter>\Processor(*)\Interrupts/sec</Counter>
+    <Counter>\Processor(*)\DPCs Queued/sec</Counter>
+    <Counter>\Processor(*)\DPC Rate</Counter>
+  </Counters>
+</CounterSet>

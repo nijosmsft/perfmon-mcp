@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  mellanox-rss.cset - lightweight wildcard variant.
+  Three Mellanox WinOF-2 counter sets, each captured with the (*)
+  instance wildcard. On a Mellanox NIC the wildcard expands to Total-
+  only columns, which is the safe / low-overhead capture mode (<1pp
+  delivery cost). See profiles/metadata.py mellanox-rss entry.
+
+  Requires the NVIDIA WinOF-2 MSI driver - the inbox netmlx5 driver
+  does NOT register the Mellanox-vendor counter sets.
+-->
+<CounterSet name="mellanox-rss">
+  <Counters>
+    <Counter>\Mellanox WinOF-2 Rss Counters(*)\*</Counter>
+    <Counter>\Mellanox WinOF-2 Receive Datapath Counters(*)\*</Counter>
+    <Counter>\Mellanox WinOF-2 Transmit Datapath Counters(*)\*</Counter>
+  </Counters>
+</CounterSet>
