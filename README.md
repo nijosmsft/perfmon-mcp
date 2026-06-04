@@ -3,8 +3,9 @@
 An MCP server for Windows performance counter (PDH) capture and analysis. It
 discovers vendored counter-set profiles, emits paste-ready `logman` /
 `Get-Counter` commands for any transport (local, PowerShell remoting,
-LabLink, manual scp), and parses captured `.blg` files into pandas for
-per-counter / per-queue / A/B analysis.
+[LabLink](https://github.com/nijosmsft/LabLink) — a lightweight Go MCP for
+remote command execution on Windows lab machines — manual scp), and parses
+captured `.blg` files into pandas for per-counter / per-queue / A/B analysis.
 
 The server is transport-agnostic. It is not coupled to any orchestration MCP.
 Every live-execute tool has a `target="local"` mode that runs the command,
@@ -14,22 +15,7 @@ a LabLink MCP node, a human paste). For each emit-style tool there is a
 sibling `parse_<X>_output` that takes raw stdout from remote execution and
 returns the same markdown shape as the local path.
 
-## Status
-
-v0.3.0. Absorbs the `analyze-mellanox-rss` skill into a discoverable MCP
-surface — adds `discover_counter_instances`, `get_teardown_commands`,
-`get_rss_distribution`, `compute_rate_from_counter`, hot/idle peer-group
-flags on `get_per_queue_summary`, and an `instance_filter` kwarg on
-`get_capture_commands` / `get_capture_instructions`. Profile metadata
-now carries `priority_metrics` and `default_instance_filter`. All v0.2
-tools and the LabLink-first remote contract are preserved.
-
-v0.2.0 added the `analyze` mega-tool, registry tools
-(`load_log`/`load_csv`/`unload_log`/`log_info`/`list_blgs`),
-counter-set / NIC / capture-status discovery tools, a NIC throughput
-convenience lens, and LabLink-first remote runbooks (with JSON sidecars)
-across every emit-style tool. `load_blg` is preserved as a deprecation
-alias of `load_log`.
+Release history lives in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Setup
 
@@ -66,7 +52,7 @@ Add the server to your MCP client config (Claude Desktop, Copilot CLI, etc):
 
 ## Tool catalog
 
-The server exposes 33 tools across six areas:
+The server exposes 30 tools across four areas:
 
 ### Discovery
 
@@ -105,7 +91,6 @@ The server exposes 33 tools across six areas:
 |---|---|
 | `load_log(path)` | Canonical loader. Auto-detects `.blg` (relog -> CSV) vs `.csv`, hits the side-by-side parquet cache when fresh, otherwise builds it. |
 | `load_csv(path)` | Skip relog for plain `.csv` inputs. |
-| `load_blg(path)` | **Deprecated v0.2 alias** of `load_log` (still works, emits a `DeprecationWarning`). |
 | `list_loaded_logs()` | Active log registry. |
 | `log_info(log_id)` | One-log metadata summary (hosts / counter count / duration / cache dir). |
 | `unload_log(log_id)` | Drop a log from the registry (cache stays on disk). |
@@ -114,17 +99,10 @@ The server exposes 33 tools across six areas:
 | `get_counter_summary(log_id, top_n, counter_filter)` | Per-counter mean/min/max/p95. |
 | `get_counter_timeline(log_id, counter, bucket_seconds, max_rows)` | Time-bucketed values for one counter. |
 | `compute_rate_from_counter(log_id, counter_filter, interval_s)` | Per-counter rate aggregator for monotonic raw totals: `(last - first) / DurationSeconds`. `interval_s` overrides the inferred elapsed window. |
-| `get_per_queue_summary(log_id, queue_filter)` | Per-NIC-RSS-queue aggregation; v0.3 surfaces `Delta`, `MaxMinRatio`, `Hot`, and `Idle` peer-group flags plus a footer summary. |
+| `get_per_queue_summary(log_id, queue_filter)` | Per-NIC-RSS-queue aggregation with `Delta`, `MaxMinRatio`, `Hot`, and `Idle` peer-group flags plus a footer summary. |
 | `get_counter_throughput(log_id, nic_filter, top_n)` | NIC throughput convenience lens; narrows the summary to Network Adapter throughput rows. |
-| `get_rss_distribution(log_id, adapter_filter, scenario_hint)` | RSS-specific lens scoped to the 13 curated Mellanox WinOF-2 counter names from the `analyze-mellanox-rss` skill; split into per-CPU + per-RqNum + per-SqNum sections with hot/idle counts in each section header. |
+| `get_rss_distribution(log_id, adapter_filter, scenario_hint)` | RSS-specific lens scoped to a curated set of Mellanox WinOF-2 RSS counters; split into per-CPU + per-RqNum + per-SqNum sections with hot/idle counts in each section header. |
 | `compare_logs(baseline_log_id, test_log_id, top_n, mode)` | A/B delta table sorted by largest swing. `mode='counter'\|'per_queue'\|'per_cpu'`. |
-
-### Evidence federation (optional)
-
-| Tool | Purpose |
-|---|---|
-| `get_evidence_status()` | Whether the `evidence-store` library is installed and `PERFMON_MCP_EVIDENCE_PATH` is set. |
-| `get_entities(log_id, entity_type, filter, max_rows)` | List registered entities; no-op when federation is off. |
 
 ## Bundled counter profiles
 
@@ -135,16 +113,12 @@ The server exposes 33 tools across six areas:
 | `mellanox-rss` | Per-RSS-queue receive monitoring on Mellanox ConnectX-6 Dx. | Low when total-only; see `mellanox-percpu` for the heavy variant. |
 | `mellanox-percpu` | Per-CPU hash-type diagnostics on Mellanox. | **~28pp delivery cost at 400K offered load when actively collected.** Use only for diagnostic distribution analysis, never for perf baselines. |
 
-The Mellanox profiles absorb the standalone `mellanox-rss-metrics` PowerShell
-skill into a single discoverable counter-set surface.
+## Mellanox NIC RSS workflow
 
-## Mellanox NIC RSS workflow (v0.3)
-
-The `analyze-mellanox-rss` skill was a standalone PowerShell workflow for
-diagnosing RSS queue load distribution on Windows hosts with NVIDIA
-ConnectX adapters (WinOF-2 driver). v0.3 absorbs that workflow into
-the MCP surface so the LLM can drive every step through tool calls,
-without leaving the model loop.
+The MCP exposes an end-to-end workflow for diagnosing RSS queue load
+distribution on Windows hosts with NVIDIA ConnectX adapters (WinOF-2
+driver). Every step is an MCP tool call, so the LLM can drive the entire
+flow without leaving the model loop.
 
 A typical end-to-end run:
 
@@ -197,7 +171,7 @@ A typical end-to-end run:
    ```
 
    `get_rss_distribution` returns per-CPU / per-RqNum / per-SqNum
-   tables scoped to the 13 curated WinOF-2 RSS counters, with
+   tables scoped to a curated set of WinOF-2 RSS counters, with
    `Hot`/`Idle` flags from the per-queue peer-group math. Every
    section header reports how many rows are hot vs idle so the LLM
    can spot queue imbalance at a glance.
@@ -235,8 +209,7 @@ options in the same preference order:
   human copies the file via RDP / share / USB.
 
 The MCP itself imports no orchestration library and reads no orchestration
-environment variable — that contract is enforced by
-`tests/test_remote_zero_coupling.py`.
+environment variable.
 
 ## Architecture
 
@@ -254,7 +227,9 @@ Tests use synthetic fixtures and never touch real perfmon counters or
 `.blg` files. The `relog.exe` shellout is mocked via
 `monkeypatch.setattr(subprocess, "run", ...)`.
 
-All commits must be signed off (`git commit -s`).
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for sign-off and PR conventions.
 
 ## License
 
