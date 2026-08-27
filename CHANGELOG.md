@@ -4,6 +4,20 @@ All notable changes to perfmon-mcp are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Startup crash on the modern mcp SDK (#38).** mcp SDK v2 removed the bundled
+  `mcp.server.fastmcp` module (FastMCP now ships as the standalone `fastmcp`
+  package), so a fresh resolve of the old unbounded `mcp>=1.0` pin pulled mcp
+  2.x and crashed at import with
+  `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`. FastMCP is now
+  imported from the standalone `fastmcp` package, `fastmcp>=2` is an explicit
+  dependency, and the mcp pin is a bounded `mcp>=1,<3` range. Tool names and
+  behavior are unchanged. Added `tests/test_stdio_handshake.py` (real
+  JSON-RPC `initialize` + `tools/list` over stdio) plus a FastMCP-source guard
+  in the smoke test to lock the migration.
+
 ## [0.3.0] - 2026-06-02
 
 ### Added

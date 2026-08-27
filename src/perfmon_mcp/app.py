@@ -5,7 +5,7 @@ with ``@mcp.tool()`` at import time, so ``server.py`` only needs to
 import the submodules in the right order.
 """
 
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 mcp = FastMCP(
     "perfmon-mcp",

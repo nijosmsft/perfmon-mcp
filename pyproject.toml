@@ -22,7 +22,11 @@ classifiers = [
     "Topic :: System :: Monitoring",
 ]
 dependencies = [
-    "mcp>=1.0",
+    # mcp SDK v2 removed the bundled ``mcp.server.fastmcp``; FastMCP now
+    # ships as the standalone ``fastmcp`` package. Keep a bounded mcp range
+    # that admits 2.x and depend on ``fastmcp`` explicitly. See #38.
+    "mcp>=1,<3",
+    "fastmcp>=2",
     "pandas>=2.0",
     "pyarrow>=14.0",
 ]

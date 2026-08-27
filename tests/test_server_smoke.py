@@ -65,3 +65,17 @@ def test_server_main_callable():
     from perfmon_mcp import server
 
     assert callable(server.main)
+
+
+def test_fastmcp_sourced_from_standalone_package():
+    """FastMCP must come from the standalone ``fastmcp`` package (#38).
+
+    mcp SDK v2 removed the bundled ``mcp.server.fastmcp`` module, so the
+    app instance must be built from the ``fastmcp`` package instead.
+    """
+    from fastmcp import FastMCP
+
+    from perfmon_mcp.app import mcp
+
+    assert isinstance(mcp, FastMCP)
+    assert type(mcp).__module__.split(".")[0] == "fastmcp"
