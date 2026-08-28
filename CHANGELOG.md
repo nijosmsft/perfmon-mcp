@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-27
+
 ### Fixed
 - **Startup crash on the modern mcp SDK (#38).** mcp SDK v2 removed the bundled
   `mcp.server.fastmcp` module (FastMCP now ships as the standalone `fastmcp`
