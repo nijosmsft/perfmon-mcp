@@ -26,7 +26,11 @@ dependencies = [
     # ships as the standalone ``fastmcp`` package. Keep a bounded mcp range
     # that admits 2.x and depend on ``fastmcp`` explicitly. See #38.
     "mcp>=1,<3",
-    "fastmcp>=2",
+    # FastMCP 2.14.1 shipped a broken decorator; the 2.x floor is 2.14.7 (the
+    # first release where ``@mcp.tool()`` works with the callable-preserving
+    # ``_PerfmonFastMCP`` shim in app.py). Cap below 3 so a range bump is a
+    # deliberate, re-tested change. See #38.
+    "fastmcp>=2.14.7,<3",
     "pandas>=2.0",
     "pyarrow>=14.0",
 ]
