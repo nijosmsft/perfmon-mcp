@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+import types
+
+import pytest
 
 
 def test_server_registers_full_tool_surface():
@@ -50,9 +54,16 @@ def test_server_registers_full_tool_surface():
         "get_entities",
     }
 
+    # Use the in-memory MCP Client so the tool surface is read the same way a
+    # real client would, over both fastmcp 2.x and 3.x. (fastmcp 2.x exposes
+    # ``get_tools()`` while 3.x adds ``list_tools()`` on the server object; the
+    # Client's ``list_tools`` is stable across the supported range.)
+    from fastmcp import Client
+
     async def _names() -> set[str]:
-        tools = await server.mcp.list_tools()
-        return {t.name for t in tools}
+        async with Client(server.mcp) as client:
+            tools = await client.list_tools()
+            return {t.name for t in tools}
 
     got = asyncio.run(_names())
     missing = expected - got
@@ -65,3 +76,57 @@ def test_server_main_callable():
     from perfmon_mcp import server
 
     assert callable(server.main)
+
+
+@pytest.mark.parametrize(
+    "module_path, attr",
+    [
+        # Both are real delegation targets: ``load_blg`` calls ``load_log`` and
+        # ``get_counter_throughput`` calls ``get_counter_summary``. The shim must
+        # leave every ``@mcp.tool()``-decorated function directly callable so
+        # that in-process delegation (and the direct-call tests) keep working
+        # under FastMCP 2.x, which otherwise replaces them with a non-callable
+        # ``FunctionTool``. See #38.
+        ("perfmon_mcp.tools.analyze", "load_log"),
+        ("perfmon_mcp.tools.analyze", "load_blg"),
+        ("perfmon_mcp.tools.analyze", "get_counter_summary"),
+        ("perfmon_mcp.tools.network_lenses", "get_counter_throughput"),
+    ],
+)
+def test_tool_shim_leaves_functions_callable(module_path: str, attr: str) -> None:
+    """``@mcp.tool()`` must hand back the underlying function (type ``function``,
+    callable), not a non-callable ``FunctionTool`` object."""
+    import perfmon_mcp.server  # noqa: F401 — ensures all tools are registered
+
+    module = __import__(module_path, fromlist=[attr])
+    fn = getattr(module, attr)
+    assert isinstance(fn, types.FunctionType), f"{attr} is {type(fn)!r}, not a function"
+    assert callable(fn)
+    assert inspect.signature(fn) is not None
+
+
+def test_fastmcp_sourced_from_standalone_package():
+    """FastMCP must come from the standalone ``fastmcp`` package (#38).
+
+    mcp SDK v2 removed the bundled ``mcp.server.fastmcp`` module, so the
+    app instance must be built from the ``fastmcp`` package instead. The
+    ``mcp`` instance is a ``_PerfmonFastMCP`` shim subclass (defined in
+    perfmon's own module), so check the *base* class' provenance rather
+    than the subclass' own module.
+    """
+    from fastmcp import FastMCP
+
+    from perfmon_mcp import app
+    from perfmon_mcp.app import mcp
+
+    assert isinstance(mcp, FastMCP)
+
+    # The ``FastMCP`` name bound in app.py must resolve to the standalone package.
+    assert app.FastMCP.__module__.split(".")[0] == "fastmcp", app.FastMCP.__module__
+    assert not app.FastMCP.__module__.startswith("mcp.server.fastmcp")
+
+    # The shim's base class must likewise be the standalone FastMCP.
+    base = app._PerfmonFastMCP.__bases__[0]
+    assert base.__name__ == "FastMCP"
+    assert base.__module__.split(".")[0] == "fastmcp", base.__module__
+    assert not base.__module__.startswith("mcp.server.fastmcp")
